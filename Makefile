@@ -18,7 +18,7 @@ setup:
 	@echo "Generating $(BOOT_CFG_FILE)"
 	@echo '{'                                    > $(BOOT_CFG_FILE)
 	@echo '  "kernel_image_path": "$(abspath $(KERNEL_IMG))",' >> $(BOOT_CFG_FILE)
-	@echo '  "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"' >> $(BOOT_CFG_FILE)
+	@echo '  "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/bin/sh"' >> $(BOOT_CFG_FILE)
 	@echo '}'                                   >> $(BOOT_CFG_FILE)
 	@echo "Generating $(DRIVE_CFG_FILE)"
 	@echo '{'                                    > $(DRIVE_CFG_FILE)
