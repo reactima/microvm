@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
 set -e
 
-echo "Step 1: Update & install prerequisites"
+echo "🔧 Step 1: Update & install prerequisites"
 sudo apt update
-sudo apt install -y pkg-config libseccomp-dev libglib2.0-dev curl unzip git build-essential docker.io
+sudo apt install -y pkg-config libseccomp-dev libglib2.0-dev curl unzip git build-essential ca-certificates gnupg lsb-release
 
-echo "Step 2: Enable & start Docker"
+echo "📦 Step 2: Install Docker from official repo (avoid containerd conflict)"
+if ! command -v docker &> /dev/null; then
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+    https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  sudo apt update
+  sudo apt install -y docker-ce docker-ce-cli containerd.io
+fi
+
+echo "🚀 Step 3: Enable & start Docker"
 sudo systemctl enable --now docker
 
-echo "Step 3: Add you to docker group"
+echo "👥 Step 4: Add you to docker group"
 sudo usermod -aG docker $USER
 
-echo "Step 4: Install Go if missing"
+echo "🐹 Step 5: Install Go if missing"
 if ! command -v go &> /dev/null; then
   GO_TARBALL=go1.21.5.linux-amd64.tar.gz
   curl -fsSL https://go.dev/dl/${GO_TARBALL} -o /tmp/${GO_TARBALL}
@@ -21,16 +32,23 @@ if ! command -v go &> /dev/null; then
   export PATH=$PATH:/usr/local/go/bin
 fi
 
-echo "Step 5: Clone & build Firecracker with log + metrics support"
+echo "🧠 Step 6: Check for /dev/kvm (required by Firecracker)"
+if [ ! -e /dev/kvm ]; then
+  echo "❌ /dev/kvm is missing. Firecracker requires KVM to run microVMs."
+  echo "💡 Tip: Use a bare-metal Linux host or launch a Multipass/VM with --mount /dev/kvm:/dev/kvm"
+  exit 1
+fi
+
+echo "🔥 Step 7: Clone & build Firecracker with log + metrics support"
 SRC_DIR=/tmp/firecracker-src
 sudo rm -rf "${SRC_DIR}"
 git clone https://github.com/firecracker-microvm/firecracker.git "${SRC_DIR}"
 cd "${SRC_DIR}"
 
 # Enable logging, metrics, vsock
-sg docker -c 'tools/devtool build -- --features vsock,logger,metrics'
+sg docker -c 'tools/devtool build -- --no-default-features --features vsock,logger,metrics'
 
-echo "Step 6: Locate the just-built binary and install"
+echo "📁 Step 8: Locate the just-built binary and install"
 BIN_PATH=$(find build/cargo_target -type f -name firecracker -path '*/debug/firecracker' | head -n1)
 if [ -z "$BIN_PATH" ]; then
   echo "❌ could not find built firecracker binary"
@@ -38,12 +56,12 @@ if [ -z "$BIN_PATH" ]; then
 fi
 sudo cp "$BIN_PATH" /usr/local/bin/firecracker
 
-echo "Step 7: Download kernel & rootfs"
+echo "📦 Step 9: Download kernel & rootfs"
 WORKDIR=~/fc-demo
 mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 [ -f vmlinux.bin ] || curl -Lo vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/clear/31390/vmlinux.bin
-[ -f rootfs.ext4 ]   || curl -Lo rootfs.ext4   https://s3.amazonaws.com/spec.ccfc.min/clear/31390/rootfs.ext4
+[ -f rootfs.ext4 ] || curl -Lo rootfs.ext4 https://s3.amazonaws.com/spec.ccfc.min/clear/31390/rootfs.ext4
 
-echo "✔️ Firecracker with logger+metrics support built and installed"
+echo "✅ Firecracker with logger+metrics support built and installed"
 echo "📂 Project directory: ${WORKDIR}"
