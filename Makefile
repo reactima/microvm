@@ -5,29 +5,32 @@ MACHINE_DIR     := machine
 API_SOCKET      := $(MACHINE_DIR)/fc.sock
 LOG_FILE        := $(MACHINE_DIR)/fc.log
 METRICS_FILE    := $(MACHINE_DIR)/fc.metrics
-METADATA_FILE   := $(MACHINE_DIR)/vmconfig.json
+BOOT_CFG_FILE   := $(MACHINE_DIR)/boot-source.json
+DRIVE_CFG_FILE  := $(MACHINE_DIR)/root-drive.json
 
 .PHONY: all setup run clean
 
 all: setup run
 
-check-kvm:
-	egrep -c '(vmx|svm)' /proc/cpuinfo
-
 setup:
 	mkdir -p $(MACHINE_DIR)
 	touch $(LOG_FILE) $(METRICS_FILE)
-	# Generate basic config
-	@printf '{\
-"boot-source": { "kernel_image_path": "%s", "boot_args": "console=ttyS0 reboot=k panic=1 pci=off" },\
-"drives": [ { "drive_id": "rootfs", "path_on_host": "%s", "is_root_device": true, "is_read_only": false } ]\
-}' "$(abspath $(KERNEL_IMG))" "$(abspath $(ROOTFS_IMG))" > $(METADATA_FILE)
+	# Generate boot-source config
+	@printf '{ \
+"kernel_image_path": "%s", \
+"boot_args": "console=ttyS0 reboot=k panic=1 pci=off" \
+}' "$(abspath $(KERNEL_IMG))" > $(BOOT_CFG_FILE)
+	# Generate root drive config
+	@printf '{ \
+"drive_id": "rootfs", \
+"path_on_host": "%s", \
+"is_root_device": true, \
+"is_read_only": false \
+}' "$(abspath $(ROOTFS_IMG))" > $(DRIVE_CFG_FILE)
 
 run:
-	# Ensure machine dir and log files exist
 	mkdir -p $(MACHINE_DIR)
 	touch $(LOG_FILE) $(METRICS_FILE)
-	# Start Firecracker API socket listener
 	$(FC_BIN) \
 		--api-sock $(API_SOCKET) \
 		--log-path $(LOG_FILE) \
@@ -38,19 +41,18 @@ run:
 		-X PUT "http://localhost/boot-source" \
 		-H "Accept: application/json" \
 		-H "Content-Type: application/json" \
-		-d @$(METADATA_FILE); \
+		-d @$($(BOOT_CFG_FILE)); \
 	curl --unix-socket $(API_SOCKET) -i \
 		-X PUT "http://localhost/drives/rootfs" \
 		-H "Accept: application/json" \
 		-H "Content-Type: application/json" \
-		-d @$(METADATA_FILE); \
+		-d @$($(DRIVE_CFG_FILE)); \
 	curl --unix-socket $(API_SOCKET) -i \
 		-X PUT "http://localhost/actions" \
 		-H "Accept: application/json" \
 		-H "Content-Type: application/json" \
 		-d '{"action_type":"InstanceStart"}'; \
 	wait $$FC_PID
-
 
 clean:
 	-killall firecracker || true
