@@ -16,17 +16,19 @@ setup:
 	mkdir -p $(MACHINE_DIR)
 	touch $(LOG_FILE) $(METRICS_FILE)
 	# Generate boot-source config
-	@printf '{ \
-"kernel_image_path": "%s", \
-"boot_args": "console=ttyS0 reboot=k panic=1 pci=off" \
-}' "$(abspath $(KERNEL_IMG))" > $(BOOT_CFG_FILE)
+	@printf '{\n\
+  "kernel_image_path": "%s",\n\
+  "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"\n\
+}\n' "$(abspath $(KERNEL_IMG))" > $(BOOT_CFG_FILE)
+
 	# Generate root drive config
-	@printf '{ \
-"drive_id": "rootfs", \
-"path_on_host": "%s", \
-"is_root_device": true, \
-"is_read_only": false \
-}' "$(abspath $(ROOTFS_IMG))" > $(DRIVE_CFG_FILE)
+	@printf '{\n\
+  "drive_id": "rootfs",\n\
+  "path_on_host": "%s",\n\
+  "is_root_device": true,\n\
+  "is_read_only": false\n\
+}\n' "$(abspath $(ROOTFS_IMG))" > $(DRIVE_CFG_FILE)
+
 
 run:
 	mkdir -p $(MACHINE_DIR)
