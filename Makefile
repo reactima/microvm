@@ -1,6 +1,6 @@
 FC_BIN          := /usr/local/bin/firecracker
-KERNEL_IMG      := vmlinux.bin
-ROOTFS_IMG      := rootfs.ext4
+KERNEL_IMG := hello-vmlinux.bin
+ROOTFS_IMG := hello-rootfs.ext4
 MACHINE_DIR     := machine
 API_SOCKET      := $(MACHINE_DIR)/fc.sock
 LOG_FILE        := $(MACHINE_DIR)/fc.log
