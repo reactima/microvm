@@ -41,12 +41,12 @@ run:
 		-X PUT "http://localhost/boot-source" \
 		-H "Accept: application/json" \
 		-H "Content-Type: application/json" \
-		-d @$($(BOOT_CFG_FILE)); \
+		-d @$(BOOT_CFG_FILE); \
 	curl --unix-socket $(API_SOCKET) -i \
 		-X PUT "http://localhost/drives/rootfs" \
 		-H "Accept: application/json" \
 		-H "Content-Type: application/json" \
-		-d @$($(DRIVE_CFG_FILE)); \
+		-d @$(DRIVE_CFG_FILE); \
 	curl --unix-socket $(API_SOCKET) -i \
 		-X PUT "http://localhost/actions" \
 		-H "Accept: application/json" \
