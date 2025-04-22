@@ -15,26 +15,18 @@ all: setup run
 setup:
 	mkdir -p $(MACHINE_DIR)
 	touch $(LOG_FILE) $(METRICS_FILE)
-
-	# Generate boot-source config
 	@echo "Generating $(BOOT_CFG_FILE)"
-	@cat <<EOF > $(BOOT_CFG_FILE)
-{
-  "kernel_image_path": "$(abspath $(KERNEL_IMG))",
-  "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"
-}
-EOF
-
-	# Generate root drive config
+	@echo '{'                                    > $(BOOT_CFG_FILE)
+	@echo '  "kernel_image_path": "$(abspath $(KERNEL_IMG))",' >> $(BOOT_CFG_FILE)
+	@echo '  "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"' >> $(BOOT_CFG_FILE)
+	@echo '}'                                   >> $(BOOT_CFG_FILE)
 	@echo "Generating $(DRIVE_CFG_FILE)"
-	@cat <<EOF > $(DRIVE_CFG_FILE)
-{
-  "drive_id": "rootfs",
-  "path_on_host": "$(abspath $(ROOTFS_IMG))",
-  "is_root_device": true,
-  "is_read_only": false
-}
-EOF
+	@echo '{'                                    > $(DRIVE_CFG_FILE)
+	@echo '  "drive_id": "rootfs",'              >> $(DRIVE_CFG_FILE)
+	@echo '  "path_on_host": "$(abspath $(ROOTFS_IMG))",' >> $(DRIVE_CFG_FILE)
+	@echo '  "is_root_device": true,'            >> $(DRIVE_CFG_FILE)
+	@echo '  "is_read_only": false'              >> $(DRIVE_CFG_FILE)
+	@echo '}'                                   >> $(DRIVE_CFG_FILE)
 
 run:
 	@echo "Starting Firecracker..."
