@@ -11,6 +11,9 @@ METADATA_FILE   := $(MACHINE_DIR)/vmconfig.json
 
 all: setup run
 
+check-kvm:
+	egrep -c '(vmx|svm)' /proc/cpuinfo
+
 setup:
 	mkdir -p $(MACHINE_DIR)
 	touch $(LOG_FILE) $(METRICS_FILE)
