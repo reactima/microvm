@@ -56,12 +56,10 @@ if [ -z "$BIN_PATH" ]; then
 fi
 sudo cp "$BIN_PATH" /usr/local/bin/firecracker
 
-echo "📦 Step 9: Download kernel & rootfs"
-WORKDIR=~/fc-demo
-mkdir -p "${WORKDIR}"
-cd "${WORKDIR}"
-[ -f vmlinux.bin ] || curl -Lo vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/clear/31390/vmlinux.bin
-[ -f rootfs.ext4 ] || curl -Lo rootfs.ext4 https://s3.amazonaws.com/spec.ccfc.min/clear/31390/rootfs.ext4
+echo "📦 Step 9: Download kernel & rootfs into current project"
+cd "$OLDPWD"
+curl -Lo vmlinux.bin https://s3.amazonaws.com/spec.ccfc.min/clear/31390/vmlinux.bin
+curl -Lo rootfs.ext4 https://s3.amazonaws.com/spec.ccfc.min/clear/31390/rootfs.ext4
 
 echo "✅ Firecracker with logger+metrics support built and installed"
-echo "📂 Project directory: ${WORKDIR}"
+echo "💡 Run from this directory: make clean && make setup && make run"
