@@ -46,4 +46,8 @@ run:
 	wait $$FC_PID
 
 ssh: ; ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$(GUEST)
-clean: ; killall firecracker 2>/dev/null || true ; sudo ip link del $(TAP) 2>/dev/null || true ; rm -rf $(MACH)
+
+clean:
+	-killall firecracker 2>/dev/null || true
+	-@sudo ip link del $(TAP) 2>/dev/null || true
+	@rm -rf $(MACH)
