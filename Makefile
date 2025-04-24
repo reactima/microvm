@@ -48,18 +48,21 @@ setup:
 net:
 	@sudo modprobe -q tun || true
 	@if ip link show $(TAP) &>/dev/null; then \
+	  echo "♻️  reuse $(TAP)"; \
 	  sudo ip link set $(TAP) up; \
 	else \
 	  echo "🔌  create $(TAP)"; \
-	  sudo ip tuntap add dev $(TAP) mode tap user $$(id -un) 2>/dev/null || { \
-	    sudo ip link del $(TAP) 2>/dev/null || true; \
-	    sudo ip tuntap add dev $(TAP) mode tap user $$(id -un); }; \
+	  if ! sudo ip tuntap add dev $(TAP) mode tap user $$(id -un) 2>/dev/null; then \
+	    echo "   ↳ fallback (root-owned tap)"; \
+	    sudo ip tuntap add dev $(TAP) mode tap; \
+	  fi; \
 	  sudo ip addr add $(HOST)/24 dev $(TAP); \
 	  sudo ip link set $(TAP) up; \
 	fi
 	@sudo sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'
 	@sudo iptables -C POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE 2>/dev/null || \
 	  sudo iptables -A POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE
+# ───────────────────────────────────────────────────────────────────────
 
 # run – start Firecracker
 run:
