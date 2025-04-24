@@ -2,29 +2,55 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
-	"time"
+	"os/exec"
 
+	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 )
 
+func must(cmd *exec.Cmd) {
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
 func main() {
-	workDir := "machine"
-	socketPath := workDir + "/fc.sock"
+	const (
+		workDir    = "machine"
+		kernel     = "hello-vmlinux.bin"
+		rootfs     = "hello-rootfs.ext4"
+		tapDev     = "tap0"
+		hostIP     = "172.16.0.1/24"
+		guestIP    = "172.16.0.2"
+		serialSock = workDir + "/serial.sock"
+	)
 
-	ctx := context.Background()
+	// --- host networking (idempotent) ----------------------------------------
+	if _, err := os.Stat("/sys/class/net/" + tapDev); os.IsNotExist(err) {
+		fmt.Println("🔌 Creating tap interface …")
+		must(exec.Command("sudo", "ip", "tuntap", "add", "dev", tapDev, "mode", "tap", "user", os.Getenv("USER")))
+		must(exec.Command("sudo", "ip", "addr", "add", hostIP, "dev", tapDev))
+		must(exec.Command("sudo", "ip", "link", "set", tapDev, "up"))
+		must(exec.Command("sudo", "sysctl", "-w", "net.ipv4.ip_forward=1"))
+	}
 
+	// --- firecracker config ---------------------------------------------------
 	cfg := firecracker.Config{
-		SocketPath:      socketPath,
-		LogFifo:         workDir + "/fc-logs.fifo",
-		MetricsFifo:     workDir + "/fc-logs.fifo",
-		KernelImagePath: "vmlinux.bin",
-		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off",
+		SocketPath:      workDir + "/fc.sock",
+		LogFifo:         workDir + "/fc.logfifo",
+		MetricsFifo:     workDir + "/fc.metricsfifo",
+		KernelImagePath: kernel,
+		KernelArgs: fmt.Sprintf(
+			"console=ttyS0 reboot=k panic=1 pci=off ip=%s::%s:255.255.255.0::eth0:off root=/dev/vda rw",
+			guestIP, hostIP[:len(hostIP)-3]), // strip /24
 		Drives: []models.Drive{
 			{
 				DriveID:      firecracker.String("rootfs"),
-				PathOnHost:   firecracker.String("rootfs.ext4"),
+				PathOnHost:   firecracker.String(rootfs),
 				IsRootDevice: firecracker.Bool(true),
 				IsReadOnly:   firecracker.Bool(false),
 			},
@@ -36,35 +62,35 @@ func main() {
 		NetworkInterfaces: []firecracker.NetworkInterface{
 			{
 				StaticConfiguration: &firecracker.StaticNetworkConfiguration{
-					HostDevName: "tap0",
+					HostDevName: tapDev,
 					MacAddress:  "AA:FC:00:00:00:01",
+					IPConfiguration: &firecracker.IPConfiguration{
+						IPAddr:  guestIP + "/24",
+						Gateway: hostIP[:len(hostIP)-3],
+					},
 				},
 			},
 		},
-		Debug: true,
+		SerialConsolePath: serialSock, // ⬅ Firecracker-go-sdk >= v0.27
+		Debug:             true,
 	}
 
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		log.Fatalf("creating %s: %v", workDir, err)
 	}
 
-	machine, err := firecracker.NewMachine(ctx, cfg)
+	// start VM
+	ctx := context.Background()
+	m, err := firecracker.NewMachine(ctx, cfg)
 	if err != nil {
-		log.Fatalf("NewMachine failed: %v", err)
+		log.Fatalf("new machine: %v", err)
 	}
 
-	if err := machine.Start(ctx); err != nil {
-		log.Fatalf("Start failed: %v", err)
+	if err := m.Start(ctx); err != nil {
+		log.Fatalf("start: %v", err)
 	}
-	log.Println("VM started; running for 10s then stopping")
-
-	time.Sleep(10 * time.Second)
-
-	if err := machine.StopVMM(); err != nil {
-		log.Fatalf("StopVMM failed: %v", err)
+	log.Println("✅ microVM running — try: ssh root@" + guestIP)
+	if err := m.Wait(ctx); err != nil {
+		log.Fatalf("wait: %v", err)
 	}
-	if err := machine.Wait(ctx); err != nil {
-		log.Fatalf("Wait failed: %v", err)
-	}
-	log.Println("VM stopped cleanly")
 }
