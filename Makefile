@@ -34,6 +34,7 @@ setup:
 	    $(TAP) $(MAC) > $(NET_JSON)
 
 net:
+	@sudo modprobe -q tun || true          # load TUN/TAP if it isn’t already
 	@if ip link show $(TAP) &>/dev/null; then \
 	  sudo ip link set $(TAP) up; \
 	else \
@@ -42,9 +43,6 @@ net:
 	  sudo ip addr add $(HOST)/24 dev $(TAP); \
 	  sudo ip link set $(TAP) up; \
 	fi
-	@sudo sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'
-	@sudo iptables -C POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE 2>/dev/null || \
-	  sudo iptables -A POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE
 
 run:
 	@rm -f $(API_SOCK)
