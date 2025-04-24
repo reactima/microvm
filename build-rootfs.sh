@@ -1,38 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMG=alpine-rootfs.ext4   # final image name
-SIZE=128M                # grow later if you need more
-MNT=/mnt/alpine-fc
+echo "🔧  [1/9] Preparing vars …"
+IMG=alpine-rootfs.ext4
+SIZE=128M
+MNT=$(mktemp -d)
+URL=https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz
 
-# 1. download tiny Alpine base
-[ -f minirootfs.tar.gz ] || \
-  curl -# -o minirootfs.tar.gz \
-  https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz
+echo "🌐  [2/9] Downloading Alpine minirootfs …"
+curl -#L "$URL" -o /tmp/minirootfs.tar.gz
 
-# 2. create blank ext4 image
-dd if=/dev/zero of=$IMG bs=$SIZE count=1
-mkfs.ext4 -q $IMG
+echo "🗄   [3/9] Creating blank ext4 image ($SIZE) …"
+dd if=/dev/zero of="$IMG" bs="$SIZE" count=1
+mkfs.ext4 -q "$IMG"
 
-# 3. populate it
-sudo mkdir -p $MNT
-sudo mount -o loop $IMG $MNT
-sudo tar -xzf minirootfs.tar.gz -C $MNT
+echo "📂  [4/9] Mounting image to $MNT …"
+sudo mount -o loop "$IMG" "$MNT"
 
-# 4. chroot & set up dropbear + networking
-sudo chroot $MNT /bin/sh -e <<'EOF'
-apk add --no-cache dropbear openssh-keygen
+echo "📦  [5/9] Extracting rootfs …"
+sudo tar -xzf /tmp/minirootfs.tar.gz -C "$MNT"
+
+echo "🔧  [6/9] Chroot: install Dropbear and config network …"
+sudo chroot "$MNT" /bin/sh -e <<'EOF'
+apk add --no-cache dropbear
 echo 'root:firecracker' | chpasswd
 rc-update add networking default
 rc-update add dropbear default
-echo "auto lo"        >  /etc/network/interfaces
-echo "iface lo inet loopback" >> /etc/network/interfaces
-echo "auto eth0"      >> /etc/network/interfaces
-echo "iface eth0 inet static" >> /etc/network/interfaces
-echo "  address 172.16.0.2"   >> /etc/network/interfaces
-echo "  netmask 255.255.255.0" >> /etc/network/interfaces
+cat > /etc/network/interfaces <<EONI
+auto lo
+iface lo inet loopback
+auto eth0
+iface eth0 inet static
+  address 172.16.0.2
+  netmask 255.255.255.0
+EONI
 exit
 EOF
 
-sudo umount $MNT
-echo "✅ $IMG ready (root password: firecracker)"
+echo "⏏️  [7/9] Unmounting image …"
+sudo umount "$MNT"
+rm -rf "$MNT"
+
+echo "🧹  [8/9] Cleaning up tarball …"
+rm -f /tmp/minirootfs.tar.gz
+
+echo "✅  [9/9] $IMG ready (root password: firecracker)"
