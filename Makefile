@@ -8,6 +8,7 @@ LOG_FILE        := $(MACHINE_DIR)/fc.log
 METRICS_FILE    := $(MACHINE_DIR)/fc.metrics
 BOOT_CFG_FILE   := $(MACHINE_DIR)/boot-source.json
 DRIVE_CFG_FILE  := $(MACHINE_DIR)/root-drive.json
+ROOTFS_IMG      := alpine-rootfs.ext4   # <— our new image
 
 # ---------- network ----------------------------------------------------------
 TAP_DEV          := tap0
@@ -17,6 +18,13 @@ NETMASK          := 255.255.255.0
 
 # ---------- phony targets ----------------------------------------------------
 .PHONY: all setup net run console ssh clean
+
+# target that builds image if absent
+rootfs:
+	@test -f $(ROOTFS_IMG) || { \
+	    echo "🏗  Building Alpine rootfs …"; \
+	    sudo ./build-rootfs.sh ; \
+	}
 
 setup:
 	mkdir -p $(MACHINE_DIR)
@@ -53,6 +61,29 @@ net:
 # 3.  Start Firecracker, attach serial socket & network
 # -----------------------------------------------------------------------------#
 run:
+	@echo "🔥 Launching microVM …"
+	$(FC_BIN) --api-sock $(API_SOCKET) --log-path $(LOG_FILE) \
+	          --metrics-path $(METRICS_FILE) & \
+	FC_PID=$$!; \
+	while [ ! -S $(API_SOCKET) ]; do sleep .1; done; \
+	curl -sS --unix-socket $(API_SOCKET) -X PUT \
+	    -H 'Content-Type: application/json' \
+	    -d @$(BOOT_CFG_FILE) http://localhost/boot-source ; \
+	curl -sS --unix-socket $(API_SOCKET) -X PUT \
+	    -H 'Content-Type: application/json' \
+	    -d @$(DRIVE_CFG_FILE) http://localhost/drives/rootfs ; \
+	curl -sS --unix-socket $(API_SOCKET) -X PUT \
+	    -H 'Content-Type: application/json' \
+	    -d '{"id":"Serial0","tty_path":"$(abspath $(SERIAL_SOCK))"}' \
+	    http://localhost/serial-ports/0 ; \
+	curl -sS --unix-socket $(API_SOCKET) -X PUT \
+	    -H 'Content-Type: application/json' \
+	    -d '{"action_type":"InstanceStart"}' http://localhost/actions ; \
+	echo "✅ VM running — wait a few seconds then \`make ssh\`"; \
+	wait $$FC_PID
+	wait $$FC_PID
+
+run-old-2025-04-24 :
 	@echo "🔥 Launching microVM …"
 	@mkdir -p $(MACHINE_DIR)
 	@touch $(LOG_FILE) $(METRICS_FILE)
@@ -100,3 +131,8 @@ clean:
 	@echo "Cleaning up..."
 	-killall firecracker 2>/dev/null || true
 	rm -rf $(MACHINE_DIR)
+
+git-reset: ## git-reset
+	cd /ilya/microvm
+	git reset --hard HEAD
+	git pull origin main
