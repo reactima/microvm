@@ -1,78 +1,65 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-############################################################
-# Alpine + OpenRC + Dropbear rootfs builder
-# Every step echoes its progress for easy debugging
-############################################################
-
-echo "🔧  [1/14] Init vars"
+echo "🔧  [1/16] Vars"
 IMG=alpine-rootfs.ext4
 SIZE=64M
 MNT=$(mktemp -d)
-URL="https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz"
+URL=https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz
 TAR=/tmp/alpine-mini.tar.gz
 
-echo "🌐  [2/14] Download Alpine minirootfs"
+echo "🌐  [2/16] Download minirootfs"
 curl -#L "$URL" -o "$TAR"
 
-echo "🗄   [3/14] Create $SIZE ext4 image $IMG"
+echo "🗄   [3/16] Create ext4 $SIZE"
 dd if=/dev/zero of="$IMG" bs="$SIZE" count=1
 mkfs.ext4 -q "$IMG"
 
-echo "📂  [4/14] Mount image → $MNT"
+echo "📂  [4/16] Mount → $MNT"
 sudo mount -o loop "$IMG" "$MNT"
 
-echo "📦  [5/14] Extract minirootfs into image"
+echo "📦  [5/16] Extract"
 sudo tar -xzf "$TAR" -C "$MNT"
 
-echo "🌍  [6/14] Copy DNS resolver"
+echo "🌍  [6/16] DNS"
 sudo cp /etc/resolv.conf "$MNT/etc/resolv.conf"
 
-echo "🔧  [7/14] Configure APK repositories"
+echo "🔧  [7/16] Configure repos"
 sudo sh -c "printf '%s\n%s\n' \
 https://dl-cdn.alpinelinux.org/alpine/v3.19/main \
 https://dl-cdn.alpinelinux.org/alpine/v3.19/community \
 > $MNT/etc/apk/repositories"
 
-echo "📦  [8/14] Chroot: install OpenRC & Dropbear (3-try retry)"
+echo "📦  [8/16] Chroot: install Dropbear only"
 sudo chroot "$MNT" /bin/sh -e <<'EOF'
 for n in 1 2 3; do
-  echo "    → apk try $n"
-  if apk update && apk add --no-cache openrc busybox-initscripts dropbear; then
-      echo "    ✓ apk succeeded"; break
-  fi
-  [ "$n" -eq 3 ] && { echo "    ✗ apk failed after 3 tries"; exit 1; }
-  echo "    … retrying in 2 s"; sleep 2
+  echo "apk try $n"; apk update && apk add --no-cache dropbear && break
+  [ $n -eq 3 ] && exit 1 || sleep 2
 done
 echo 'root:firecracker' | chpasswd
-rc-update add devfs      sysinit
-rc-update add procfs     sysinit
-rc-update add sysfs      sysinit
-rc-update add networking default
-rc-update add dropbear   default
-mkdir -p /run/openrc && touch /run/openrc/softlevel
-cat > /etc/network/interfaces <<EONI
-auto eth0
-iface eth0 inet static
-  address 172.16.0.2
-  netmask 255.255.255.0
-EONI
+mkdir -p /etc/dropbear
+cat > /etc/inittab <<EOT
+::sysinit:/bin/mount -t proc proc /proc
+::sysinit:/bin/mount -t sysfs sysfs /sys
+::respawn:/usr/sbin/dropbear -F -E
+::askfirst:/bin/ash
+::ctrlaltdel:/bin/umount -a -r
+EOT
 exit
 EOF
 
-echo "⏏️  [9/14] Unmount image"
+echo "⏏️  [9/16] Unmount"
 sudo umount "$MNT"
 rm -rf "$MNT"
 
-echo "🧹  [10/14] Delete downloaded tarball"
-rm -f "$TAR"
-
-echo "🚫  [11/14] Strip ext4 journal (speed-up boot)"
+echo "🚫  [10/16] Strip journal"
 sudo tune2fs -O ^has_journal "$IMG"
 
-echo "🧽  [12/14] fsck & mark clean"
+echo "🧽  [11/16] fsck"
 sudo e2fsck -fy "$IMG" >/dev/null
 
-echo "🔐  [13/14] Root password  : firecracker"
-echo "✅  [14/14] $IMG ready!"
+echo "🧹  [12/16] Cleanup tar"
+rm -f "$TAR"
+
+echo "🔐  [13/16] root pwd : firecracker"
+echo "✅  [14/16] $IMG ready"
