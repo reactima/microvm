@@ -35,7 +35,8 @@ https://dl-cdn.alpinelinux.org/alpine/v3.19/community
 EOF
 
 echo "📦  [8/17] Chroot: install pkgs + generate host keys"
-sudo chroot "$MNT" /bin/sh -e <<'EOF'
+# ── NOTE ── no quotes around EOF → variables expand inside chroot
+sudo chroot "$MNT" /bin/sh -e <<EOF
 # install busybox-extras (ifconfig) + dropbear
 for n in 1 2 3; do
   echo "apk attempt \$n"
@@ -46,9 +47,10 @@ done
 echo 'root:firecracker' | chpasswd
 ln -sf /bin/busybox /sbin/ifconfig
 
-# generate four key types to silence Dropbear warnings
+# generate four host-key types
 for t in rsa dss ecdsa ed25519; do
-  test -f /etc/dropbear/dropbear_\${t}_host_key || dropbearkey -t \$t -f /etc/dropbear/dropbear_\${t}_host_key > /dev/null
+  test -f /etc/dropbear/dropbear_\${t}_host_key || \
+    dropbearkey -t \$t -f /etc/dropbear/dropbear_\${t}_host_key > /dev/null
 done
 
 cat > /etc/inittab <<EOT
