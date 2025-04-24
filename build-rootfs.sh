@@ -45,6 +45,9 @@ done
 cat > /etc/inittab <<'EOT'
 ::sysinit:/bin/mount -t proc proc /proc
 ::sysinit:/bin/mount -t sysfs sysfs /sys
+::sysinit:/bin/mount -t devtmpfs devtmpfs /dev
+::sysinit:/bin/mkdir -p /dev/pts
+::sysinit:/bin/mount -t devpts devpts /dev/pts
 ::sysinit:/sbin/ifconfig eth0 172.16.0.2 netmask 255.255.255.0 up
 ::respawn:/usr/sbin/haveged -F -w 1024
 ::respawn:/usr/sbin/dropbear -F -E
@@ -54,8 +57,15 @@ EOT
 exit
 EOS
 
-echo "⏏️   Unmount"; sudo umount "$MNT"
-echo "🚫  Strip journal"; sudo tune2fs -O ^has_journal "$IMG"; sudo e2fsck -fy "$IMG" >/dev/null
-echo "🧹  Clean"; rm -f "$TAR"
+echo "⏏️   Unmount"
+sudo umount "$MNT"
+
+echo "🚫  Strip journal"
+sudo tune2fs -O ^has_journal "$IMG"
+sudo e2fsck -fy "$IMG" >/dev/null
+
+echo "🧹  Clean"
+rm -f "$TAR"
+
 echo "🔐  root pwd : firecracker"
 echo "✅  $IMG ready"
