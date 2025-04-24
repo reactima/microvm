@@ -1,6 +1,5 @@
-# Makefile – always recreate tap0, no reuse branch left
+# Makefile – rebuild tap0 each run, entropy via haveged, no /entropy API
 
-# paths
 FC_BIN      := /usr/local/bin/firecracker
 KERNEL_IMG  := hello-vmlinux.bin
 ROOTFS_IMG  := alpine-rootfs.ext4
@@ -21,19 +20,17 @@ GUEST := 172.16.0.2
 MASK  := 255.255.255.0
 
 .PHONY: all rootfs setup net run ssh clean
-
 all: rootfs setup net run
 
 rootfs:
 	@if [ ! -f $(ROOTFS_IMG) ]; then \
 	    echo "📦  building rootfs…"; \
-	    if [ $$(id -u) -eq 0 ]; then $(BUILD_SH); \
-	    else sudo $(BUILD_SH); fi; \
+	    ( [ $$(id -u) -eq 0 ] && $(BUILD_SH) || sudo $(BUILD_SH) ); \
 	fi
 
 setup:
 	@mkdir -p $(MACH); touch $(LOG_FILE) $(METRICS)
-	@printf '{\n "kernel_image_path":"%s",\n "boot_args":"console=ttyS0 reboot=k panic=1 pci=off virtio_mmio.device=4K@0xd0000000:5 root=/dev/vda rw ip=%s::%s:%s::eth0:off quiet init=/sbin/init"\n}\n' \
+	@printf '{\n "kernel_image_path":"%s",\n "boot_args":"console=ttyS0 reboot=k panic=1 pci=off random.trust_cpu=on virtio_mmio.device=4K@0xd0000000:5 root=/dev/vda rw ip=%s::%s:%s::eth0:off quiet init=/bin/ash"\n}\n' \
 	    "$(abspath $(KERNEL_IMG))" $(GUEST) $(HOST) $(MASK) > $(BOOT_JSON)
 	@printf '{\n "drive_id":"rootfs",\n "path_on_host":"%s",\n "is_root_device":true,\n "is_read_only":false\n}\n' \
 	    "$(abspath $(ROOTFS_IMG))" > $(DRIVE_JSON)
@@ -42,7 +39,7 @@ setup:
 
 net:
 	@sudo modprobe -q tun || true
-	@echo "🔌  (re)create $(TAP)"
+	@echo "🔌  recreate $(TAP)"
 	@sudo ip link del $(TAP) 2>/dev/null || true
 	@sudo ip tuntap add dev $(TAP) mode tap
 	@sudo ip addr add $(HOST)/24 dev $(TAP)
@@ -59,8 +56,6 @@ run:
 	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' -d@$(DRIVE_JSON) http://localhost/drives/rootfs ; \
 	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' -d@$(NET_JSON)   http://localhost/network-interfaces/eth0 ; \
 	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' \
-	     -d '{"entropy_device":{"rng_source":"/dev/urandom"}}' http://localhost/entropy ; \
-	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' \
 	     -d '{"action_type":"InstanceStart"}' http://localhost/actions ; \
 	echo "✅  microVM up — run 'make ssh'"; \
 	wait $$FC
@@ -72,9 +67,3 @@ clean:
 	-pkill -x firecracker 2>/dev/null || true
 	-sudo ip link del $(TAP) 2>/dev/null || true
 	-rm -rf $(MACH) $(ROOTFS_IMG)
-
-
-git-reset: ## git-reset
-	cd /ilya/microvm
-	git reset --hard HEAD
-	git pull origin main
