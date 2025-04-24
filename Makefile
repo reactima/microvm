@@ -55,10 +55,13 @@ run:
 	@rm -f $(API_SOCK)
 	$(FC_BIN) --api-sock $(API_SOCK) --log-path $(LOG_FILE) --metrics-path $(METRICS) & \
 	FC=$$!; while [ ! -S $(API_SOCK) ]; do sleep .1; done; \
-	curl -sS --unix-socket $(API_SOCK) -X PUT -H'Content-Type: application/json' -d@$(BOOT_JSON)  http://localhost/boot-source ; \
-	curl -sS --unix-socket $(API_SOCK) -X PUT -H'Content-Type: application/json' -d@$(DRIVE_JSON) http://localhost/drives/rootfs ; \
-	curl -sS --unix-socket $(API_SOCK) -X PUT -H'Content-Type: application/json' -d@$(NET_JSON)   http://localhost/network-interfaces/eth0 ; \
-	curl -sS --unix-socket $(API_SOCK) -X PUT -H'Content-Type: application/json' -d'{"action_type":"InstanceStart"}' http://localhost/actions ; \
+	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' -d@$(BOOT_JSON)  http://localhost/boot-source ; \
+	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' -d@$(DRIVE_JSON) http://localhost/drives/rootfs ; \
+	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' -d@$(NET_JSON)   http://localhost/network-interfaces/eth0 ; \
+	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' \
+	     -d '{"entropy_device":{"rng_source":"/dev/urandom"}}' http://localhost/entropy ; \
+	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' \
+	     -d '{"action_type":"InstanceStart"}' http://localhost/actions ; \
 	echo "✅  microVM up — run 'make ssh'"; \
 	wait $$FC
 
