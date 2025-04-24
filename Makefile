@@ -1,6 +1,6 @@
-# Makefile – Firecracker micro-VM build/boot (race-free, sudo-safe)
+# Makefile – always recreate tap0, no reuse branch left
 
-# ── paths ───────────────────────────────────────────────
+# paths
 FC_BIN      := /usr/local/bin/firecracker
 KERNEL_IMG  := hello-vmlinux.bin
 ROOTFS_IMG  := alpine-rootfs.ext4
@@ -22,17 +22,6 @@ MASK  := 255.255.255.0
 
 .PHONY: all rootfs setup net run ssh clean
 
-# ── helper (shell function) ────────────────────────────
-define create_tap
-	echo "🔌  create $(TAP)"; \
-	sudo ip link del $(TAP) 2>/dev/null || true; \
-	sudo ip tuntap add dev $(TAP) mode tap || exit 1; \
-	sudo ip link set $(TAP) up; \
-	sudo ip addr add $(HOST)/24 dev $(TAP)
-endef
-export create_tap
-
-# ── high-level targets ─────────────────────────────────
 all: rootfs setup net run
 
 rootfs:
@@ -51,22 +40,17 @@ setup:
 	@printf '{\n "iface_id":"eth0",\n "host_dev_name":"%s",\n "guest_mac":"%s"\n}\n' \
 	    $(TAP) $(MAC) > $(NET_JSON)
 
-# ── net – robust tap reuse / re-creation ───────────────
 net:
 	@sudo modprobe -q tun || true
-	@if ip link show $(TAP) &>/dev/null; then \
-	  echo "♻️  reuse $(TAP)"; \
-	  if ! sudo ip link set $(TAP) up; then \
-	    $(create_tap); \
-	  fi; \
-	else \
-	  $(create_tap); \
-	fi
+	@echo "🔌  (re)create $(TAP)"
+	@sudo ip link del $(TAP) 2>/dev/null || true
+	@sudo ip tuntap add dev $(TAP) mode tap
+	@sudo ip addr add $(HOST)/24 dev $(TAP)
+	@sudo ip link set $(TAP) up
 	@sudo sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'
 	@sudo iptables -C POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE 2>/dev/null || \
 	  sudo iptables -A POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE
 
-# ── run – boot VM ──────────────────────────────────────
 run:
 	@rm -f $(API_SOCK)
 	$(FC_BIN) --api-sock $(API_SOCK) --log-path $(LOG_FILE) --metrics-path $(METRICS) & \
@@ -81,14 +65,13 @@ run:
 ssh:
 	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$(GUEST)
 
-# ── clean – full teardown ─────────────────────────────
 clean:
 	-pkill -x firecracker 2>/dev/null || true
 	-sudo ip link del $(TAP) 2>/dev/null || true
 	-rm -rf $(MACH) $(ROOTFS_IMG)
 
-# ── clean – full teardown ─────────────────────────────
-clean:
-	-pkill -x firecracker 2>/dev/null || true
-	-sudo ip link del $(TAP) 2>/dev/null || true
-	-rm -rf $(MACH) $(ROOTFS_IMG)
+
+git-reset: ## git-reset
+	cd /ilya/microvm
+	git reset --hard HEAD
+	git pull origin main
