@@ -79,6 +79,8 @@ clean:
 	-sudo ip link del $(TAP) 2>/dev/null || true
 	-rm -rf $(MACH) $(ROOTFS_IMG)
 
+metrics:
+	@curl -sS --unix-socket $(API_SOCK) http://localhost/metrics | jq .
 
 git-reset: ## git-reset
 	cd /ilya/microvm

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# build-rootfs.sh – Alpine 3.19 + haveged + Dropbear (auto-login)
+# build-rootfs.sh – Alpine 3.19 + Python + haveged + Dropbear (auto-login)
 
 set -euo pipefail
+
 IMG=alpine-rootfs.ext4
-SIZE=64M
+SIZE=128M
 MNT=$(mktemp -d)
 URL=https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.2-x86_64.tar.gz
 TAR=/tmp/alpine-mini.tar.gz
@@ -33,15 +34,24 @@ https://dl-cdn.alpinelinux.org/alpine/v3.19/main
 https://dl-cdn.alpinelinux.org/alpine/v3.19/community
 EOF
 
-echo "📦  Chroot: install packages, keys, haveged"
+echo "📦  Chroot: install Python, Dropbear, haveged, build tools"
 sudo chroot "$MNT" /bin/sh -e <<'EOS'
 apk update
-apk add --no-cache dropbear busybox-extras haveged
+apk add --no-cache \
+  python3 py3-pip \
+  dropbear busybox-extras haveged \
+  build-base python3-dev musl-dev
+
+ln -sf python3 /usr/bin/python
 echo 'root:firecracker' | chpasswd
 ln -sf /bin/busybox /sbin/ifconfig
+
+# SSH keys for Dropbear
 for t in rsa dss ecdsa ed25519; do
   dropbearkey -t $t -f /etc/dropbear/dropbear_${t}_host_key >/dev/null
 done
+
+# Init setup
 cat > /etc/inittab <<'EOT'
 ::sysinit:/bin/mount -t proc proc /proc
 ::sysinit:/bin/mount -t sysfs sysfs /sys
