@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-rootfs.sh – Alpine 3.19 + Dropbear with all host keys
+# build-rootfs.sh – Alpine 3.19 + Dropbear (auto-login on serial console)
 
 set -euo pipefail
 
@@ -58,7 +58,7 @@ cat > /etc/inittab <<EOT
 ::sysinit:/bin/mount -t sysfs sysfs /sys
 ::sysinit:/sbin/ifconfig eth0 172.16.0.2 netmask 255.255.255.0 up
 ::respawn:/usr/sbin/dropbear -F -E
-::askfirst:/bin/ash
+::respawn:/bin/ash
 ::ctrlaltdel:/bin/umount -a -r
 EOT
 exit

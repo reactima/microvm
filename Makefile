@@ -1,4 +1,4 @@
-# Makefile – Firecracker micro-VM build/boot, race-free tap handling
+# Makefile – Firecracker micro-VM build/boot (race-free, sudo-safe)
 
 # ── paths ───────────────────────────────────────────────
 FC_BIN      := /usr/local/bin/firecracker
@@ -80,6 +80,12 @@ run:
 
 ssh:
 	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$(GUEST)
+
+# ── clean – full teardown ─────────────────────────────
+clean:
+	-pkill -x firecracker 2>/dev/null || true
+	-sudo ip link del $(TAP) 2>/dev/null || true
+	-rm -rf $(MACH) $(ROOTFS_IMG)
 
 # ── clean – full teardown ─────────────────────────────
 clean:
