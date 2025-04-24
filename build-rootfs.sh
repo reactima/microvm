@@ -4,7 +4,7 @@
 set -euo pipefail
 
 IMG=alpine-rootfs.ext4
-SIZE=128M
+SIZE=512M
 MNT=$(mktemp -d)
 URL=https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.2-x86_64.tar.gz
 TAR=/tmp/alpine-mini.tar.gz
