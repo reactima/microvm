@@ -58,3 +58,9 @@ clean:
 	-killall firecracker 2>/dev/null || true
 	-@sudo ip link del $(TAP) 2>/dev/null || true
 	@rm -rf $(MACH)
+
+
+git-reset: ## git-reset
+	cd /ilya/microvm
+	git reset --hard HEAD
+	git pull origin main
