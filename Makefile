@@ -1,9 +1,12 @@
-# Makefile  – clean, idempotent, one-target-per-name
+# Makefile – clean, idempotent, sudo-safe
+# ======================================
 
-# paths
+# ─── paths ─────────────────────────────────────────────────────────────
 FC_BIN      := /usr/local/bin/firecracker
 KERNEL_IMG  := hello-vmlinux.bin
 ROOTFS_IMG  := alpine-rootfs.ext4
+BUILD_SH    := $(CURDIR)/build-rootfs.sh
+
 MACH        := machine
 API_SOCK    := $(MACH)/fc.sock
 LOG_FILE    := $(MACH)/fc.log
@@ -20,10 +23,18 @@ MASK  := 255.255.255.0
 
 .PHONY: all rootfs setup net run ssh clean
 
+# ─── high-level targets ────────────────────────────────────────────────
 all: rootfs setup net run
 
-rootfs: ; [ -f $(ROOTFS_IMG) ] || sudo ./build-rootfs.sh
+# rootfs – build image once (works under sudo or unprivileged)
+rootfs:
+	@if [ ! -f $(ROOTFS_IMG) ]; then \
+	    echo "📦  building rootfs…"; \
+	    if [ $$(id -u) -eq 0 ]; then $(BUILD_SH); \
+	    else sudo $(BUILD_SH); fi; \
+	fi
 
+# setup – generate Firecracker config JSONs
 setup:
 	@mkdir -p $(MACH); touch $(LOG_FILE) $(METRICS)
 	@printf '{\n "kernel_image_path":"%s",\n "boot_args":"console=ttyS0 reboot=k panic=1 pci=off virtio_mmio.device=4K@0xd0000000:5 root=/dev/vda rw ip=%s::%s:%s::eth0:off quiet init=/sbin/init"\n}\n' \
@@ -33,17 +44,24 @@ setup:
 	@printf '{\n "iface_id":"eth0",\n "host_dev_name":"%s",\n "guest_mac":"%s"\n}\n' \
 	    $(TAP) $(MAC) > $(NET_JSON)
 
+# net – ensure tun module + tap0
 net:
-	@sudo modprobe -q tun || true          # load TUN/TAP if it isn’t already
+	@sudo modprobe -q tun || true
 	@if ip link show $(TAP) &>/dev/null; then \
 	  sudo ip link set $(TAP) up; \
 	else \
 	  echo "🔌  create $(TAP)"; \
-	  sudo ip tuntap add dev $(TAP) mode tap user $$(id -un); \
+	  sudo ip tuntap add dev $(TAP) mode tap user $$(id -un) 2>/dev/null || { \
+	    sudo ip link del $(TAP) 2>/dev/null || true; \
+	    sudo ip tuntap add dev $(TAP) mode tap user $$(id -un); }; \
 	  sudo ip addr add $(HOST)/24 dev $(TAP); \
 	  sudo ip link set $(TAP) up; \
 	fi
+	@sudo sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'
+	@sudo iptables -C POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE 2>/dev/null || \
+	  sudo iptables -A POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE
 
+# run – start Firecracker
 run:
 	@rm -f $(API_SOCK)
 	$(FC_BIN) --api-sock $(API_SOCK) --log-path $(LOG_FILE) --metrics-path $(METRICS) & \
@@ -52,18 +70,14 @@ run:
 	curl -sS --unix-socket $(API_SOCK) -X PUT -H'Content-Type: application/json' -d@$(DRIVE_JSON) http://localhost/drives/rootfs ; \
 	curl -sS --unix-socket $(API_SOCK) -X PUT -H'Content-Type: application/json' -d@$(NET_JSON)   http://localhost/network-interfaces/eth0 ; \
 	curl -sS --unix-socket $(API_SOCK) -X PUT -H'Content-Type: application/json' -d'{"action_type":"InstanceStart"}' http://localhost/actions ; \
-	echo "✅ microVM up — run 'make ssh'"; \
+	echo "✅  microVM up — run 'make ssh'"; \
 	wait $$FC
 
+# ssh – log in
 ssh: ; ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$(GUEST)
 
+# clean – full teardown
 clean:
 	-pkill -x firecracker 2>/dev/null || true
 	-sudo ip link del $(TAP) 2>/dev/null || true
 	-rm -rf $(MACH) $(ROOTFS_IMG)
-
-
-git-reset: ## git-reset
-	cd /ilya/microvm
-	git reset --hard HEAD
-	git pull origin main

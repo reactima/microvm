@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-rootfs.sh  – reproducible Alpine 3.19 rootfs with Dropbear host keys
+# build-rootfs.sh – Alpine 3.19 + Dropbear with all host keys
 
 set -euo pipefail
 
@@ -36,6 +36,7 @@ EOF
 
 echo "📦  [8/17] Chroot: install pkgs + generate host keys"
 sudo chroot "$MNT" /bin/sh -e <<'EOF'
+# install busybox-extras (ifconfig) + dropbear
 for n in 1 2 3; do
   echo "apk attempt \$n"
   apk update && apk add --no-cache dropbear busybox-extras && break
@@ -45,8 +46,10 @@ done
 echo 'root:firecracker' | chpasswd
 ln -sf /bin/busybox /sbin/ifconfig
 
-# generate at least one host key so Dropbear can start
-dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
+# generate four key types to silence Dropbear warnings
+for t in rsa dss ecdsa ed25519; do
+  test -f /etc/dropbear/dropbear_\${t}_host_key || dropbearkey -t \$t -f /etc/dropbear/dropbear_\${t}_host_key > /dev/null
+done
 
 cat > /etc/inittab <<EOT
 ::sysinit:/bin/mount -t proc proc /proc
