@@ -1,6 +1,8 @@
 # Firecracker MicroVM Launcher for Data Analytics
 
-This project demonstrates spinning up thousands of Firecracker MicroVMs with sub-second boot times, each ready with a minimal environment suitable for lightweight data analytics—similar in spirit to [lovable.dev](https://lovable.dev). It includes:
+Work in progress!
+
+This project will demonstrate spinning up thousands of Firecracker MicroVMs with sub-second boot times, each ready with a minimal environment suitable for lightweight data analytics—similar in spirit to [lovable.dev](https://lovable.dev). It includes:
 
 - A `Makefile` to automate Firecracker VM setup and launch
 - A Go program to manage and launch VMs using the Firecracker Go SDK
