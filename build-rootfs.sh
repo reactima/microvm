@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 echo "🔧  [1/17] Vars"
-IMG=alpine-rootfs.ext4
-SIZE=64M
+IMG=alpine-rootfs.ext4; SIZE=64M
 MNT=$(mktemp -d)
 URL=https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz
 TAR=/tmp/alpine-mini.tar.gz
@@ -21,24 +19,24 @@ sudo mount -o loop "$IMG" "$MNT"
 echo "📦  [5/17] Extract rootfs"
 sudo tar -xzf "$TAR" -C "$MNT"
 
-echo "🌍  [6/17] Copy host DNS"
+echo "🌍  [6/17] Copy DNS"
 sudo cp /etc/resolv.conf "$MNT/etc/resolv.conf"
 
 echo "🔧  [7/17] Configure APK mirrors"
-sudo sh -c "printf '%s\n%s\n' \
-https://dl-cdn.alpinelinux.org/alpine/v3.19/main \
-https://dl-cdn.alpinelinux.org/alpine/v3.19/community \
-> $MNT/etc/apk/repositories"
+sudo tee "$MNT/etc/apk/repositories" >/dev/null <<EOF
+https://dl-cdn.alpinelinux.org/alpine/v3.19/main
+https://dl-cdn.alpinelinux.org/alpine/v3.19/community
+EOF
 
-echo "📦  [8/17] Chroot: install Dropbear"
+echo "📦  [8/17] Chroot: add dropbear + ifconfig link"
 sudo chroot "$MNT" /bin/sh -e <<'EOF'
 for n in 1 2 3; do
   echo "apk attempt $n"
-  apk update && apk add --no-cache dropbear && break
+  apk update && apk add --no-cache dropbear busybox-extras && break
   [ "$n" -eq 3 ] && exit 1 || sleep 2
 done
 echo 'root:firecracker' | chpasswd
-# busybox init script: bring up eth0 then start dropbear
+ln -sf /bin/busybox /sbin/ifconfig          # ensure ifconfig exists
 cat > /etc/inittab <<EOT
 ::sysinit:/bin/mount -t proc proc /proc
 ::sysinit:/bin/mount -t sysfs sysfs /sys
@@ -50,11 +48,10 @@ EOT
 exit
 EOF
 
-echo "⏏️  [9/17] Unmount image"
-sudo umount "$MNT"
-rm -rf "$MNT"
+echo "⏏️  [9/17] Unmount"
+sudo umount "$MNT"; rm -rf "$MNT"
 
-echo "🚫  [10/17] Remove journal (faster boot)"
+echo "🚫  [10/17] Strip ext4 journal"
 sudo tune2fs -O ^has_journal "$IMG"
 sudo e2fsck -fy "$IMG" >/dev/null
 
