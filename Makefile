@@ -1,4 +1,4 @@
-# Makefile – Firecracker micro-VM build/boot, idempotent and sudo-safe
+# Makefile – Firecracker micro-VM build/boot, race-free tap handling
 
 # ── paths ───────────────────────────────────────────────
 FC_BIN      := /usr/local/bin/firecracker
@@ -22,6 +22,16 @@ MASK  := 255.255.255.0
 
 .PHONY: all rootfs setup net run ssh clean
 
+# ── helper (shell function) ────────────────────────────
+define create_tap
+	echo "🔌  create $(TAP)"; \
+	sudo ip link del $(TAP) 2>/dev/null || true; \
+	sudo ip tuntap add dev $(TAP) mode tap || exit 1; \
+	sudo ip link set $(TAP) up; \
+	sudo ip addr add $(HOST)/24 dev $(TAP)
+endef
+export create_tap
+
 # ── high-level targets ─────────────────────────────────
 all: rootfs setup net run
 
@@ -41,21 +51,16 @@ setup:
 	@printf '{\n "iface_id":"eth0",\n "host_dev_name":"%s",\n "guest_mac":"%s"\n}\n' \
 	    $(TAP) $(MAC) > $(NET_JSON)
 
-# ── net – create or reuse tap, race-free ───────────────
+# ── net – robust tap reuse / re-creation ───────────────
 net:
 	@sudo modprobe -q tun || true
 	@if ip link show $(TAP) &>/dev/null; then \
 	  echo "♻️  reuse $(TAP)"; \
-	  sudo ip link set $(TAP) up; \
-	else \
-	  echo "🔌  create $(TAP)"; \
-	  if ! sudo ip tuntap add dev $(TAP) mode tap 2>/dev/null; then \
-	    sudo ip link del $(TAP) 2>/dev/null || true; \
-	    sudo ip tuntap add dev $(TAP) mode tap; \
+	  if ! sudo ip link set $(TAP) up; then \
+	    $(create_tap); \
 	  fi; \
-	  sudo ip link set $(TAP) up; \
-	  sudo ip addr add $(HOST)/24 dev $(TAP); \
-	  sudo ip link set $(TAP) up; \
+	else \
+	  $(create_tap); \
 	fi
 	@sudo sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'
 	@sudo iptables -C POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE 2>/dev/null || \
@@ -81,8 +86,3 @@ clean:
 	-pkill -x firecracker 2>/dev/null || true
 	-sudo ip link del $(TAP) 2>/dev/null || true
 	-rm -rf $(MACH) $(ROOTFS_IMG)
-
-git-reset: ## git-reset
-	cd /ilya/microvm
-	git reset --hard HEAD
-	git pull origin main
