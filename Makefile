@@ -28,10 +28,21 @@ rootfs:
 	    ( [ $$(id -u) -eq 0 ] && $(BUILD_SH) || sudo $(BUILD_SH) ); \
 	fi
 
-setup:
+setup-old:
 	@mkdir -p $(MACH); touch $(LOG_FILE) $(METRICS)
 	@printf '{\n "kernel_image_path":"%s",\n "boot_args":"console=ttyS0 reboot=k panic=1 pci=off random.trust_cpu=on virtio_mmio.device=4K@0xd0000000:5 root=/dev/vda rw ip=%s::%s:%s::eth0:off quiet init=/bin/ash"\n}\n' \
 	    "$(abspath $(KERNEL_IMG))" $(GUEST) $(HOST) $(MASK) > $(BOOT_JSON)
+	@printf '{\n "drive_id":"rootfs",\n "path_on_host":"%s",\n "is_root_device":true,\n "is_read_only":false\n}\n' \
+	    "$(abspath $(ROOTFS_IMG))" > $(DRIVE_JSON)
+	@printf '{\n "iface_id":"eth0",\n "host_dev_name":"%s",\n "guest_mac":"%s"\n}\n' \
+	    $(TAP) $(MAC) > $(NET_JSON)
+
+setup:
+	@mkdir -p $(MACH); touch $(LOG_FILE) $(METRICS)
+	# REMOVED: ip=$(GUEST)::$(HOST):$(MASK)::eth0:off quiet init=/bin/ash
+	# ADDED:   quiet (retained quiet, removed ip= and init=)
+	@printf '{\n "kernel_image_path":"%s",\n "boot_args":"console=ttyS0 reboot=k panic=1 pci=off random.trust_cpu=on virtio_mmio.device=4K@0xd0000000:5 root=/dev/vda rw quiet"\n}\n' \
+	    "$(abspath $(KERNEL_IMG))" > $(BOOT_JSON)
 	@printf '{\n "drive_id":"rootfs",\n "path_on_host":"%s",\n "is_root_device":true,\n "is_read_only":false\n}\n' \
 	    "$(abspath $(ROOTFS_IMG))" > $(DRIVE_JSON)
 	@printf '{\n "iface_id":"eth0",\n "host_dev_name":"%s",\n "guest_mac":"%s"\n}\n' \
@@ -67,3 +78,9 @@ clean:
 	-pkill -x firecracker 2>/dev/null || true
 	-sudo ip link del $(TAP) 2>/dev/null || true
 	-rm -rf $(MACH) $(ROOTFS_IMG)
+
+
+git-reset: ## git-reset
+	cd /ilya/microvm
+	git reset --hard HEAD
+	git pull origin main
