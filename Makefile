@@ -1,3 +1,5 @@
+# Makefile  – clean, idempotent, one-target-per-name
+
 # paths
 FC_BIN      := /usr/local/bin/firecracker
 KERNEL_IMG  := hello-vmlinux.bin
@@ -17,6 +19,7 @@ GUEST := 172.16.0.2
 MASK  := 255.255.255.0
 
 .PHONY: all rootfs setup net run ssh clean
+
 all: rootfs setup net run
 
 rootfs: ; [ -f $(ROOTFS_IMG) ] || sudo ./build-rootfs.sh
@@ -31,7 +34,9 @@ setup:
 	    $(TAP) $(MAC) > $(NET_JSON)
 
 net:
-	@if ! ip link show $(TAP) &>/dev/null; then \
+	@if ip link show $(TAP) &>/dev/null; then \
+	  sudo ip link set $(TAP) up; \
+	else \
 	  echo "🔌  create $(TAP)"; \
 	  sudo ip tuntap add dev $(TAP) mode tap user $$(id -un); \
 	  sudo ip addr add $(HOST)/24 dev $(TAP); \
@@ -42,6 +47,7 @@ net:
 	  sudo iptables -A POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE
 
 run:
+	@rm -f $(API_SOCK)
 	$(FC_BIN) --api-sock $(API_SOCK) --log-path $(LOG_FILE) --metrics-path $(METRICS) & \
 	FC=$$!; while [ ! -S $(API_SOCK) ]; do sleep .1; done; \
 	curl -sS --unix-socket $(API_SOCK) -X PUT -H'Content-Type: application/json' -d@$(BOOT_JSON)  http://localhost/boot-source ; \
@@ -52,12 +58,11 @@ run:
 	wait $$FC
 
 ssh: ; ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$(GUEST)
-clean: ; killall firecracker 2>/dev/null || true ; sudo ip link del $(TAP) 2>/dev/null || true ; rm -rf $(MACH)
 
 clean:
-	-killall firecracker 2>/dev/null || true
-	-@sudo ip link del $(TAP) 2>/dev/null || true
-	@rm -rf $(MACH)
+	-pkill -x firecracker 2>/dev/null || true
+	-sudo ip link del $(TAP) 2>/dev/null || true
+	-rm -rf $(MACH) $(ROOTFS_IMG)
 
 
 git-reset: ## git-reset
