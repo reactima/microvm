@@ -1,10 +1,8 @@
-// cmd/spawn-slog/main.go
 package main
 
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,40 +10,29 @@ import (
 
 	fc "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
 const (
-	kernel  = "hello-vmlinux.bin"  // built by Makefile
-	rootfs  = "alpine-rootfs.ext4" // built by build-rootfs.sh
-	hostDev = "tap0"               // created by `make net`
+	kernel  = "hello-vmlinux.bin"
+	rootfs  = "alpine-rootfs.ext4"
+	hostDev = "tap0"
 	hostGW  = "172.16.0.1"
 )
 
-/* ----------------------------- slog adapter ------------------------------ */
-
-type slogAdapter struct{ *slog.Logger }
-
-func (l slogAdapter) Debugf(f string, v ...interface{}) { l.Debug(fmt.Sprintf(f, v...)) }
-func (l slogAdapter) Infof(f string, v ...interface{})  { l.Info(fmt.Sprintf(f, v...)) }
-func (l slogAdapter) Warnf(f string, v ...interface{})  { l.Warn(fmt.Sprintf(f, v...)) }
-func (l slogAdapter) Errorf(f string, v ...interface{}) { l.Error(fmt.Sprintf(f, v...)) }
-
-/* --------------------------- overlay rootfs COW -------------------------- */
-
+// overlay-mounted, copy-on-write rootfs
 func cloneRootfs(idx int) string {
-	cow := filepath.Join("machine", fmt.Sprintf("cow%d", idx))
-	_ = os.MkdirAll(cow, 0o755)
-	if err := unix.Mount(rootfs, cow, "overlay", 0,
-		fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s_work", rootfs, cow, cow)); err != nil {
-		panic("overlayfs mount failed (modprobe overlay?) ⇒ " + err.Error())
+	upper := filepath.Join("machine", fmt.Sprintf("cow%d", idx))
+	_ = os.MkdirAll(upper, 0o755)
+	if err := unix.Mount(rootfs, upper, "overlay", 0,
+		fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s_work", rootfs, upper, upper)); err != nil {
+		panic(err) // overlayfs module missing?
 	}
-	return cow
+	return upper
 }
 
-/* ------------------------------ VM spawner ------------------------------- */
-
-func spawn(idx int, ip string, lg *slog.Logger) {
+func spawn(idx int, ip string, baseLog *logrus.Logger) {
 	vmID := fmt.Sprintf("vm%d", idx)
 	dir := filepath.Join("machine", vmID)
 	_ = os.MkdirAll(dir, 0o755)
@@ -57,7 +44,8 @@ func spawn(idx int, ip string, lg *slog.Logger) {
 		KernelImagePath: kernel,
 		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw quiet",
 		Drives: []models.Drive{{
-			DriveID: fc.String("rootfs"), PathOnHost: fc.String(cloneRootfs(idx)),
+			DriveID:      fc.String("rootfs"),
+			PathOnHost:   fc.String(cloneRootfs(idx)),
 			IsRootDevice: fc.Bool(true),
 		}},
 		NetworkInterfaces: fc.NetworkInterfaces{{
@@ -71,40 +59,37 @@ func spawn(idx int, ip string, lg *slog.Logger) {
 			},
 		}},
 		MachineCfg: models.MachineConfiguration{
-			MemSizeMib: fc.Int64(96), VcpuCount: fc.Int64(1),
+			MemSizeMib: fc.Int64(96),
+			VcpuCount:  fc.Int64(1),
 		},
 		VMID: vmID,
 	}
 
-	// Firecracker expects its own logger interface; wrap slog.
-	logger := slogAdapter{lg.With("vm", vmID)}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	m, err := fc.NewMachine(ctx, cfg, fc.WithLogger(logger))
+	logEntry := logrus.NewEntry(baseLog).WithField("vm", vmID)
+
+	m, err := fc.NewMachine(ctx, cfg, fc.WithLogger(logEntry))
 	if err != nil {
-		logger.Errorf("new: %v", err)
-		return
+		logEntry.Fatalf("new: %v", err)
 	}
 
 	if err := m.Start(ctx); err != nil {
-		logger.Errorf("start: %v", err)
-		return
+		logEntry.Fatalf("start: %v", err)
 	}
 
-	logger.Infof("up → ssh root@%s (pwd firecracker)", ip)
+	logEntry.Infof("up → ssh root@%s (pwd firecracker)", ip)
 	go m.Wait(context.Background())
 }
 
-/* --------------------------------- main ---------------------------------- */
-
 func main() {
-	lg := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := logrus.New()
+	logger.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
 
-	spawn(0, "172.16.0.10", lg)
-	spawn(1, "172.16.0.11", lg)
-	spawn(2, "172.16.0.12", lg)
+	spawn(0, "172.16.0.10", logger)
+	spawn(1, "172.16.0.11", logger)
+	spawn(2, "172.16.0.12", logger)
 
-	select {} // keep program alive
+	select {} // keep main alive
 }
