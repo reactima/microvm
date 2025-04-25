@@ -1,105 +1,57 @@
-// main.go – 3-VM launcher with resource-exhaustion checks
+// main.go – three microVMs on bridge fcbr0
+
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"fmt"
+	fc "github.com/firecracker-microvm/firecracker-go-sdk"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
-	"time"
-
-	fc "github.com/firecracker-microvm/firecracker-go-sdk"
-	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
-	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 const (
 	kernel     = "hello-vmlinux.bin"
 	rootfs     = "alpine-rootfs.ext4"
+	bridge     = "fcbr0"
 	hostGW     = "172.16.0.1"
-	memPerVMMB = 96 // must match MachineCfg below
+	subnetCIDR = "172.16.0.0/24"
+	memPerVM   = 96 // MiB
 )
 
 var log = logrus.New()
 
-/* ---------------------------------------------------- helpers  */
+/* ---------- host-side helpers ------------------------------------------------ */
 
-func must(cmd *exec.Cmd) {
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		panic(err)
+func sh(args ...string) *exec.Cmd { return exec.Command("sudo", args...) }
+
+func ensureBridge() {
+	if _, err := os.Stat("/sys/class/net/" + bridge); os.IsNotExist(err) {
+		log.Info("creating bridge " + bridge)
+		_ = sh("ip", "link", "add", "name", bridge, "type", "bridge").Run()
+		_ = sh("ip", "addr", "add", hostGW+"/24", "dev", bridge).Run()
+		_ = sh("ip", "link", "set", bridge, "up").Run()
+	}
+	// one-time NAT
+	if err := sh("iptables", "-t", "nat", "-C", "POSTROUTING",
+		"-s", subnetCIDR, "-j", "MASQUERADE").Run(); err != nil {
+		_ = sh("iptables", "-t", "nat", "-A", "POSTROUTING",
+			"-s", subnetCIDR, "-j", "MASQUERADE").Run()
 	}
 }
 
-// memOK returns true when MemAvailable in /proc/meminfo ≥ needMB.
-func memOK(needMB int) bool {
-	f, _ := os.Open("/proc/meminfo")
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if strings.HasPrefix(sc.Text(), "MemAvailable:") {
-			fields := strings.Fields(sc.Text())
-			kib, _ := strconv.Atoi(fields[1])
-			return kib/1024 >= needMB
-		}
-	}
-	return true // fallback: assume OK
+func attachTap(tap string) {
+	_ = sh("ip", "tuntap", "add", "dev", tap, "mode", "tap").Run()
+	_ = sh("ip", "link", "set", tap, "master", bridge).Run()
+	_ = sh("ip", "link", "set", tap, "up").Run()
 }
 
-// diskOK checks free space under dir ≥ needMB.
-func diskOK(dir string, needMB int) bool {
-	var st unix.Statfs_t
-	if err := unix.Statfs(dir, &st); err != nil {
-		return true // best effort
-	}
-	free := st.Bavail * uint64(st.Bsize) / (1024 * 1024)
-	return int(free) >= needMB
-}
-
-/* --------------------------------------------- tap management  */
-
-// freeTap returns a tap name that doesn’t exist OR is not open by any process.
-func freeTap(base string, idx int) string {
-	for {
-		name := fmt.Sprintf("%s%d", base, idx)
-		if _, err := os.Stat("/sys/class/net/" + name); os.IsNotExist(err) {
-			return name // brand-new
-		}
-		// Is the tap in use by another FD?  Check lsof – quicker via fuser -v.
-		out, _ := exec.Command("fuser", "-v", "/dev/net/tun").CombinedOutput()
-		if !bytes.Contains(out, []byte(name)) {
-			// tap exists but no one holds it: delete & reuse
-			_ = exec.Command("sudo", "ip", "link", "del", name).Run()
-			return name
-		}
-		idx++ // else busy → pick next suffix
-	}
-}
-
-// createTap creates/sets-up the tap. idx==0 gets addr & MASQUERADE.
-func createTap(tap string, idx int) {
-	must(exec.Command("sudo", "ip", "tuntap", "add", "dev", tap, "mode", "tap"))
-	if idx == 0 {
-		must(exec.Command("sudo", "ip", "addr", "add", hostGW+"/24", "dev", tap))
-		// add MASQUERADE rule only once
-		if err := exec.Command("sudo", "iptables", "-C", "POSTROUTING", "-t", "nat",
-			"-s", "172.16.0.0/24", "-j", "MASQUERADE").Run(); err != nil {
-			must(exec.Command("sudo", "iptables", "-A", "POSTROUTING", "-t", "nat",
-				"-s", "172.16.0.0/24", "-j", "MASQUERADE"))
-		}
-	}
-	must(exec.Command("sudo", "ip", "link", "set", tap, "up"))
-}
-
-/* ------------------------------------------- rootfs per-VM CoW */
+/* ---------- CoW rootfs ------------------------------------------------------- */
 
 func reflinkOrCopy(dst, src string) error {
 	in, err := os.Open(src)
@@ -113,35 +65,27 @@ func reflinkOrCopy(dst, src string) error {
 	}
 	defer out.Close()
 	const ficlone = 0x40049409
-	if err := unix.IoctlSetInt(int(out.Fd()), ficlone, int(in.Fd())); err == nil {
+	if unix.IoctlSetInt(int(out.Fd()), ficlone, int(in.Fd())) == nil {
 		return nil
 	}
 	_, err = io.Copy(out, in)
 	return err
 }
 
-/* --------------------------------------------------- VM spawn  */
+/* ---------- VM spawn --------------------------------------------------------- */
 
 func spawn(idx int, ip string) {
-	vmID := fmt.Sprintf("vm%d", idx)
-
-	if !memOK(memPerVMMB) {
-		log.Fatalf("[%s] host RAM exhausted (need %d MiB free)", vmID, memPerVMMB)
-	}
-	if !diskOK(".", 50) { // need ~50 MB free with copy path
-		log.Fatalf("[%s] host disk space exhausted (<50 MiB free)", vmID)
-	}
-
+	vmID := "vm" + ip[len(ip)-2:] // vm10, vm11 …
 	dir := filepath.Join("machine", vmID)
 	_ = os.MkdirAll(dir, 0o755)
 
-	vmRoot := filepath.Join(dir, "rootfs.ext4")
-	if err := reflinkOrCopy(vmRoot, rootfs); err != nil {
-		log.Fatalf("[%s] rootfs clone: %v", vmID, err)
+	dst := filepath.Join(dir, "rootfs.ext4")
+	if err := reflinkOrCopy(dst, rootfs); err != nil {
+		log.Fatalf("[%s] clone rootfs: %v", vmID, err)
 	}
 
-	tap := freeTap("tapfc", idx)
-	createTap(tap, idx)
+	tap := "tapfc" + ip[len(ip)-2:]
+	attachTap(tap)
 
 	_, ipNet, _ := net.ParseCIDR(ip + "/24")
 
@@ -153,13 +97,13 @@ func spawn(idx int, ip string) {
 		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw quiet",
 		Drives: []models.Drive{{
 			DriveID:      fc.String("rootfs"),
-			PathOnHost:   fc.String(vmRoot),
+			PathOnHost:   fc.String(dst),
 			IsRootDevice: fc.Bool(true),
 		}},
 		NetworkInterfaces: fc.NetworkInterfaces{{
 			StaticConfiguration: &fc.StaticNetworkConfiguration{
 				HostDevName: tap,
-				MacAddress:  fmt.Sprintf("AA:FC:00:%02d:%02d:%02d", idx, idx, idx),
+				MacAddress:  "AA:FC:00:00:" + ip[len(ip)-2:] + ":" + ip[len(ip)-2:],
 				IPConfiguration: &fc.IPConfiguration{
 					IPAddr:  *ipNet,
 					Gateway: net.ParseIP(hostGW),
@@ -167,31 +111,29 @@ func spawn(idx int, ip string) {
 			},
 		}},
 		MachineCfg: models.MachineConfiguration{
-			MemSizeMib: fc.Int64(memPerVMMB),
+			MemSizeMib: fc.Int64(memPerVM),
 			VcpuCount:  fc.Int64(1),
 		},
 		VMID: vmID,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	entry := log.WithField("vm", vmID)
-	m, err := fc.NewMachine(ctx, cfg, fc.WithLogger(entry))
+	m, err := fc.NewMachine(context.Background(), cfg, fc.WithLogger(entry))
 	if err != nil {
 		entry.Fatalf("new: %v", err)
 	}
-	if err := m.Start(ctx); err != nil {
+	if err := m.Start(context.Background()); err != nil {
 		entry.Fatalf("start: %v", err)
 	}
-	entry.Infof("up → ssh root@%s (pwd firecracker)  |  tap=%s", ip, tap)
+	entry.Infof("up → ssh root@%s  (pwd firecracker)", ip)
 	go m.Wait(context.Background())
 }
 
-/* -------------------------------------------------------------- */
+/* ---------- main ------------------------------------------------------------ */
 
 func main() {
 	log.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
+	ensureBridge()
 
 	spawn(0, "172.16.0.10")
 	spawn(1, "172.16.0.11")
