@@ -1,5 +1,4 @@
-// main.go – launch three Firecracker microVMs on fcbr0 bridge
-// run with: sudo -E $(which go) run main.go
+// main.go – multi-VM launcher (vm10/11/12) – run with sudo.
 package main
 
 import (
@@ -27,7 +26,7 @@ const (
 	memMB    = 96
 )
 
-func must(cmd ...string) {
+func run(cmd ...string) {
 	c := exec.Command(cmd[0], cmd[1:]...)
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
 	if err := c.Run(); err != nil {
@@ -37,28 +36,28 @@ func must(cmd ...string) {
 
 func ensureRoot() {
 	if os.Geteuid() != 0 {
-		log.Fatalf("run with: sudo -E $(which go) run main.go")
+		log.Fatal("run with: sudo make run-go")
 	}
 }
 
 func bridgeUp() {
 	if _, err := os.Stat("/sys/class/net/" + bridge); os.IsNotExist(err) {
-		must("ip", "link", "add", bridge, "type", "bridge")
-		must("ip", "addr", "add", hostCIDR, "dev", bridge)
-		must("ip", "link", "set", bridge, "up")
+		run("ip", "link", "add", bridge, "type", "bridge")
+		run("ip", "addr", "add", hostCIDR, "dev", bridge)
+		run("ip", "link", "set", bridge, "up")
 	}
 	if exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING",
 		"-s", subnet, "-j", "MASQUERADE").Run() != nil {
-		must("iptables", "-t", "nat", "-A", "POSTROUTING",
+		run("iptables", "-t", "nat", "-A", "POSTROUTING",
 			"-s", subnet, "-j", "MASQUERADE")
 	}
 }
 
 func mkTap(name string) {
 	_ = exec.Command("ip", "link", "del", name).Run()
-	must("ip", "tuntap", "add", name, "mode", "tap")
-	must("ip", "link", "set", name, "master", bridge)
-	must("ip", "link", "set", name, "up")
+	run("ip", "tuntap", "add", name, "mode", "tap")
+	run("ip", "link", "set", name, "master", bridge)
+	run("ip", "link", "set", name, "up")
 }
 
 func reflinkOrCopy(dst, src string) error {
@@ -81,17 +80,17 @@ func reflinkOrCopy(dst, src string) error {
 }
 
 func spawn(ip string) {
-	suffix := ip[strings.LastIndex(ip, ".")+1:] // "10"
-	vmID := "vm" + suffix
+	sfx := ip[strings.LastIndex(ip, ".")+1:]
+	vmID := "vm" + sfx
 	dir := filepath.Join("machine", vmID)
 	_ = os.MkdirAll(dir, 0o755)
 
-	vmRoot := filepath.Join(dir, "rootfs.ext4")
-	if err := reflinkOrCopy(vmRoot, rootfs); err != nil {
+	dst := filepath.Join(dir, "rootfs.ext4")
+	if err := reflinkOrCopy(dst, rootfs); err != nil {
 		log.Fatalf("[%s] rootfs clone: %v", vmID, err)
 	}
 
-	tap := "tapfc" + suffix
+	tap := "tapfc" + sfx
 	mkTap(tap)
 
 	kargs := fmt.Sprintf(
@@ -106,14 +105,13 @@ func spawn(ip string) {
 		KernelArgs:      kargs,
 		Drives: []models.Drive{{
 			DriveID:      fc.String("rootfs"),
-			PathOnHost:   fc.String(vmRoot),
+			PathOnHost:   fc.String(dst),
 			IsRootDevice: fc.Bool(true),
 		}},
 		NetworkInterfaces: fc.NetworkInterfaces{{
 			StaticConfiguration: &fc.StaticNetworkConfiguration{
 				HostDevName: tap,
-				MacAddress:  "AA:FC:00:00:" + suffix + ":" + suffix,
-				/* no IPConfiguration – kernel already sets IP via ip= */
+				MacAddress:  "AA:FC:00:00:" + sfx + ":" + sfx,
 			},
 		}},
 		MachineCfg: models.MachineConfiguration{
