@@ -1,13 +1,18 @@
-// main.go – spin up three Firecracker microVMs backed by reflinked rootfs
+// main.go – 3-VM launcher with resource-exhaustion checks
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	fc "github.com/firecracker-microvm/firecracker-go-sdk"
@@ -17,55 +22,128 @@ import (
 )
 
 const (
-	kernel  = "hello-vmlinux.bin"  // built by Makefile
-	rootfs  = "alpine-rootfs.ext4" // built by build-rootfs.sh
-	hostDev = "tap0"               // created by `make net`
-	hostGW  = "172.16.0.1"         // gateway inside /24
+	kernel     = "hello-vmlinux.bin"
+	rootfs     = "alpine-rootfs.ext4"
+	hostGW     = "172.16.0.1"
+	memPerVMMB = 96 // must match MachineCfg below
 )
 
-// reflinkOrCopy tries the FICLONE ioctl; falls back to io.Copy on filesystems
-// that don’t support it (ext4 w/o reflink, ext3, etc.).
+var log = logrus.New()
+
+/* ---------------------------------------------------- helpers  */
+
+func must(cmd *exec.Cmd) {
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		panic(err)
+	}
+}
+
+// memOK returns true when MemAvailable in /proc/meminfo ≥ needMB.
+func memOK(needMB int) bool {
+	f, _ := os.Open("/proc/meminfo")
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		if strings.HasPrefix(sc.Text(), "MemAvailable:") {
+			fields := strings.Fields(sc.Text())
+			kib, _ := strconv.Atoi(fields[1])
+			return kib/1024 >= needMB
+		}
+	}
+	return true // fallback: assume OK
+}
+
+// diskOK checks free space under dir ≥ needMB.
+func diskOK(dir string, needMB int) bool {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return true // best effort
+	}
+	free := st.Bavail * uint64(st.Bsize) / (1024 * 1024)
+	return int(free) >= needMB
+}
+
+/* --------------------------------------------- tap management  */
+
+// freeTap returns a tap name that doesn’t exist OR is not open by any process.
+func freeTap(base string, idx int) string {
+	for {
+		name := fmt.Sprintf("%s%d", base, idx)
+		if _, err := os.Stat("/sys/class/net/" + name); os.IsNotExist(err) {
+			return name // brand-new
+		}
+		// Is the tap in use by another FD?  Check lsof – quicker via fuser -v.
+		out, _ := exec.Command("fuser", "-v", "/dev/net/tun").CombinedOutput()
+		if !bytes.Contains(out, []byte(name)) {
+			// tap exists but no one holds it: delete & reuse
+			_ = exec.Command("sudo", "ip", "link", "del", name).Run()
+			return name
+		}
+		idx++ // else busy → pick next suffix
+	}
+}
+
+// createTap creates/sets-up the tap. idx==0 gets addr & MASQUERADE.
+func createTap(tap string, idx int) {
+	must(exec.Command("sudo", "ip", "tuntap", "add", "dev", tap, "mode", "tap"))
+	if idx == 0 {
+		must(exec.Command("sudo", "ip", "addr", "add", hostGW+"/24", "dev", tap))
+		// add MASQUERADE rule only once
+		if err := exec.Command("sudo", "iptables", "-C", "POSTROUTING", "-t", "nat",
+			"-s", "172.16.0.0/24", "-j", "MASQUERADE").Run(); err != nil {
+			must(exec.Command("sudo", "iptables", "-A", "POSTROUTING", "-t", "nat",
+				"-s", "172.16.0.0/24", "-j", "MASQUERADE"))
+		}
+	}
+	must(exec.Command("sudo", "ip", "link", "set", tap, "up"))
+}
+
+/* ------------------------------------------- rootfs per-VM CoW */
+
 func reflinkOrCopy(dst, src string) error {
-	srcFd, err := os.Open(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer srcFd.Close()
-
-	dstFd, err := os.Create(dst)
+	defer in.Close()
+	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer dstFd.Close()
-
-	// Linux FICLONE=0x40049409  (see linux/fs.h)
+	defer out.Close()
 	const ficlone = 0x40049409
-	if err := unix.IoctlSetInt(int(dstFd.Fd()), ficlone, int(srcFd.Fd())); err == nil {
-		return nil // reflink succeeded 🎉
+	if err := unix.IoctlSetInt(int(out.Fd()), ficlone, int(in.Fd())); err == nil {
+		return nil
 	}
-
-	// slow path: plain copy
-	_, err = io.Copy(dstFd, srcFd)
+	_, err = io.Copy(out, in)
 	return err
 }
 
-func spawn(idx int, ip string, baseLog *logrus.Logger) {
+/* --------------------------------------------------- VM spawn  */
+
+func spawn(idx int, ip string) {
 	vmID := fmt.Sprintf("vm%d", idx)
-	dir := filepath.Join("machine", vmID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		baseLog.Fatalf("mkdir %s: %v", dir, err)
+
+	if !memOK(memPerVMMB) {
+		log.Fatalf("[%s] host RAM exhausted (need %d MiB free)", vmID, memPerVMMB)
+	}
+	if !diskOK(".", 50) { // need ~50 MB free with copy path
+		log.Fatalf("[%s] host disk space exhausted (<50 MiB free)", vmID)
 	}
 
-	// per-VM writable rootfs
+	dir := filepath.Join("machine", vmID)
+	_ = os.MkdirAll(dir, 0o755)
+
 	vmRoot := filepath.Join(dir, "rootfs.ext4")
 	if err := reflinkOrCopy(vmRoot, rootfs); err != nil {
-		baseLog.Fatalf("clone rootfs: %v", err)
+		log.Fatalf("[%s] rootfs clone: %v", vmID, err)
 	}
 
-	_, ipNet, err := net.ParseCIDR(ip + "/24")
-	if err != nil {
-		baseLog.Fatalf("CIDR parse: %v", err)
-	}
+	tap := freeTap("tapfc", idx)
+	createTap(tap, idx)
+
+	_, ipNet, _ := net.ParseCIDR(ip + "/24")
 
 	cfg := fc.Config{
 		SocketPath:      filepath.Join(dir, "fc.sock"),
@@ -80,8 +158,8 @@ func spawn(idx int, ip string, baseLog *logrus.Logger) {
 		}},
 		NetworkInterfaces: fc.NetworkInterfaces{{
 			StaticConfiguration: &fc.StaticNetworkConfiguration{
-				HostDevName: hostDev,
-				MacAddress:  fmt.Sprintf("AA:FC:00:00:%02d:%02d", idx, idx),
+				HostDevName: tap,
+				MacAddress:  fmt.Sprintf("AA:FC:00:%02d:%02d:%02d", idx, idx, idx),
 				IPConfiguration: &fc.IPConfiguration{
 					IPAddr:  *ipNet,
 					Gateway: net.ParseIP(hostGW),
@@ -89,7 +167,7 @@ func spawn(idx int, ip string, baseLog *logrus.Logger) {
 			},
 		}},
 		MachineCfg: models.MachineConfiguration{
-			MemSizeMib: fc.Int64(96),
+			MemSizeMib: fc.Int64(memPerVMMB),
 			VcpuCount:  fc.Int64(1),
 		},
 		VMID: vmID,
@@ -98,7 +176,7 @@ func spawn(idx int, ip string, baseLog *logrus.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	entry := logrus.NewEntry(baseLog).WithField("vm", vmID)
+	entry := log.WithField("vm", vmID)
 	m, err := fc.NewMachine(ctx, cfg, fc.WithLogger(entry))
 	if err != nil {
 		entry.Fatalf("new: %v", err)
@@ -106,18 +184,18 @@ func spawn(idx int, ip string, baseLog *logrus.Logger) {
 	if err := m.Start(ctx); err != nil {
 		entry.Fatalf("start: %v", err)
 	}
-	entry.Infof("up → ssh root@%s  (pwd firecracker)", ip)
-
-	go m.Wait(context.Background()) // reap when the VM exits
+	entry.Infof("up → ssh root@%s (pwd firecracker)  |  tap=%s", ip, tap)
+	go m.Wait(context.Background())
 }
 
+/* -------------------------------------------------------------- */
+
 func main() {
-	log := logrus.New()
 	log.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
 
-	spawn(0, "172.16.0.10", log)
-	spawn(1, "172.16.0.11", log)
-	spawn(2, "172.16.0.12", log)
+	spawn(0, "172.16.0.10")
+	spawn(1, "172.16.0.11")
+	spawn(2, "172.16.0.12")
 
-	select {} // keep microVMs alive
+	select {} // keep host alive
 }
