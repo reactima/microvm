@@ -83,6 +83,9 @@ clean:
 metrics:
 	@curl -sS --unix-socket $(API_SOCK) http://localhost/metrics | jq .
 
+run-go:
+	sudo -E $(which go) run main.go
+
 git-reset: ## git-reset
 	cd /ilya/microvm
 	git reset --hard HEAD

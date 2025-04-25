@@ -1,8 +1,10 @@
-// main.go – three VMs on bridge fcbr0; run as root.
+// main.go – starts 3 microVMs (vm10..12) using Firecracker
+// Run as root:   sudo -E $(which go) run main.go
 package main
 
 import (
 	"context"
+	"fmt"
 	fc "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	"golang.org/x/sys/unix"
@@ -12,13 +14,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const (
 	kernel     = "hello-vmlinux.bin"
 	rootfs     = "alpine-rootfs.ext4"
 	bridge     = "fcbr0"
-	hostIP     = "172.16.0.1/24"
+	hostCIDR   = "172.16.0.1/24"
 	hostGW     = "172.16.0.1"
 	subnetCIDR = "172.16.0.0/24"
 	memPerVM   = 96
@@ -31,37 +34,54 @@ func must(cmd *exec.Cmd) {
 	}
 }
 
+func run(cmd ...string) { must(exec.Command(cmd[0], cmd[1:]...)) }
+
+/* ---------- root check & bridge ------------------------------------------- */
+
 func ensureRoot() {
 	if os.Geteuid() != 0 {
-		log.Fatal("Run this program as root: sudo go run main.go")
+		log.Fatal("Run with: sudo -E $(which go) run main.go")
 	}
 }
-
-/* ---------- bridge & NAT --------------------------------------------------- */
 
 func ensureBridge() {
 	if _, err := os.Stat("/sys/class/net/" + bridge); os.IsNotExist(err) {
-		must(exec.Command("ip", "link", "add", bridge, "type", "bridge"))
-		must(exec.Command("ip", "addr", "add", hostIP, "dev", bridge))
-		must(exec.Command("ip", "link", "set", bridge, "up"))
+		run("ip", "link", "add", bridge, "type", "bridge")
+		run("ip", "addr", "add", hostCIDR, "dev", bridge)
+		run("ip", "link", "set", bridge, "up")
 	}
-
-	if err := exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING",
-		"-s", subnetCIDR, "-j", "MASQUERADE").Run(); err != nil {
-		must(exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING",
-			"-s", subnetCIDR, "-j", "MASQUERADE"))
+	if exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING",
+		"-s", subnetCIDR, "-j", "MASQUERADE").Run() != nil {
+		run("iptables", "-t", "nat", "-A", "POSTROUTING",
+			"-s", subnetCIDR, "-j", "MASQUERADE")
 	}
 }
 
-/* ---------- tap per VM ----------------------------------------------------- */
+/* ---------- tap helpers ---------------------------------------------------- */
+
+func cleanTap(name string) {
+	_ = exec.Command("ip", "link", "del", name).Run()
+}
+
+func newTapSuffix(base string) string {
+	for i := 10; i < 100; i++ {
+		name := fmt.Sprintf("%s%d", base, i)
+		if _, err := os.Stat("/sys/class/net/" + name); os.IsNotExist(err) {
+			return name
+		}
+	}
+	log.Fatalf("ran out of tap names")
+	return ""
+}
 
 func createTap(name string) {
-	must(exec.Command("ip", "tuntap", "add", name, "mode", "tap"))
-	must(exec.Command("ip", "link", "set", name, "master", bridge))
-	must(exec.Command("ip", "link", "set", name, "up"))
+	cleanTap(name) // delete stale one
+	run("ip", "tuntap", "add", name, "mode", "tap")
+	run("ip", "link", "set", name, "master", bridge)
+	run("ip", "link", "set", name, "up")
 }
 
-/* ---------- copy-on-write rootfs ------------------------------------------- */
+/* ---------- rootfs clone --------------------------------------------------- */
 
 func reflinkOrCopy(dst, src string) error {
 	in, err := os.Open(src)
@@ -82,10 +102,10 @@ func reflinkOrCopy(dst, src string) error {
 	return err
 }
 
-/* ---------- spawn one VM --------------------------------------------------- */
+/* ---------- spawn VM ------------------------------------------------------- */
 
 func spawn(idx int, ip string) {
-	vmID := "vm" + ip[len(ip)-2:]
+	vmID := "vm" + ip[strings.LastIndex(ip, ".")+1:]
 	dir := filepath.Join("machine", vmID)
 	_ = os.MkdirAll(dir, 0o755)
 
@@ -94,7 +114,7 @@ func spawn(idx int, ip string) {
 		log.Fatalf("[%s] rootfs clone: %v", vmID, err)
 	}
 
-	tap := "tapfc" + ip[len(ip)-2:]
+	tap := "tapfc" + ip[strings.LastIndex(ip, ".")+1:]
 	createTap(tap)
 
 	_, ipNet, _ := net.ParseCIDR(ip + "/24")
@@ -132,7 +152,19 @@ func spawn(idx int, ip string) {
 		log.Fatalf("[%s] new: %v", vmID, err)
 	}
 	if err := m.Start(context.Background()); err != nil {
-		log.Fatalf("[%s] start: %v", vmID, err)
+		// tap busy? pick next name & recurse once
+		if strings.Contains(err.Error(), "Device or resource busy") {
+			nextTap := newTapSuffix("tapfc")
+			log.Printf("[%s] %s busy, retrying with %s", vmID, tap, nextTap)
+			cleanTap(nextTap)
+			createTap(nextTap)
+			cfg.NetworkInterfaces[0].StaticConfiguration.HostDevName = nextTap
+			if err := m.Start(context.Background()); err != nil {
+				log.Fatalf("[%s] start (retry): %v", vmID, err)
+			}
+		} else {
+			log.Fatalf("[%s] start: %v", vmID, err)
+		}
 	}
 	log.Printf("[%s] up → ssh root@%s (pwd firecracker)", vmID, ip)
 	go m.Wait(context.Background())
