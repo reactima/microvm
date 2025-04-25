@@ -71,6 +71,7 @@ run:
 	echo "✅  microVM up — run 'make ssh'"; \
 	wait $$FC
 
+
 ssh:
 	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$(GUEST)
 
