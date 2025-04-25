@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -11,31 +11,49 @@ import (
 	fc "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 const (
-	kernel  = "hello-vmlinux.bin"
-	rootfs  = "alpine-rootfs.ext4"
-	hostDev = "tap0"
+	kernel  = "hello-vmlinux.bin"  // built by Makefile
+	rootfs  = "alpine-rootfs.ext4" // built by build-rootfs.sh
+	hostDev = "tap0"               // created by `make net`
 	hostGW  = "172.16.0.1"
 )
 
-// overlay-mounted, copy-on-write rootfs
-func cloneRootfs(idx int) string {
-	upper := filepath.Join("machine", fmt.Sprintf("cow%d", idx))
-	_ = os.MkdirAll(upper, 0o755)
-	if err := unix.Mount(rootfs, upper, "overlay", 0,
-		fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s_work", rootfs, upper, upper)); err != nil {
-		panic(err) // overlayfs module missing?
+// reflinkOrCopy creates vm-local ext4 by hard-clone (reflink) if the FS supports
+// it, falling back to a plain copy.  Result ~instant on modern filesystems.
+func reflinkOrCopy(dst, src string) error {
+	// Try FICLONE ioctl (btrfs/xfs/ext4-reflink/APFS)
+	if err := fc.Ficlonerange(dst, src); err == nil {
+		return nil
 	}
-	return upper
+	// fall back: plain copy
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func spawn(idx int, ip string, baseLog *logrus.Logger) {
 	vmID := fmt.Sprintf("vm%d", idx)
 	dir := filepath.Join("machine", vmID)
-	_ = os.MkdirAll(dir, 0o755)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		baseLog.Fatalf("mkdir %s: %v", dir, err)
+	}
+
+	// Per-VM rootfs ­– fast reflink if possible
+	vmRoot := filepath.Join(dir, "rootfs.ext4")
+	if err := reflinkOrCopy(vmRoot, rootfs); err != nil {
+		baseLog.Fatalf("rootfs clone: %v", err)
+	}
 
 	cfg := fc.Config{
 		SocketPath:      filepath.Join(dir, "fc.sock"),
@@ -45,7 +63,7 @@ func spawn(idx int, ip string, baseLog *logrus.Logger) {
 		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw quiet",
 		Drives: []models.Drive{{
 			DriveID:      fc.String("rootfs"),
-			PathOnHost:   fc.String(cloneRootfs(idx)),
+			PathOnHost:   fc.String(vmRoot),
 			IsRootDevice: fc.Bool(true),
 		}},
 		NetworkInterfaces: fc.NetworkInterfaces{{
@@ -53,8 +71,8 @@ func spawn(idx int, ip string, baseLog *logrus.Logger) {
 				HostDevName: hostDev,
 				MacAddress:  fmt.Sprintf("AA:FC:00:00:%02d:%02d", idx, idx),
 				IPConfiguration: &fc.IPConfiguration{
-					IPAddr:  net.IPNet{IP: net.ParseIP(ip), Mask: net.CIDRMask(24, 32)},
-					Gateway: net.ParseIP(hostGW),
+					IPAddr:  fc.MustParseCIDR(ip + "/24"),
+					Gateway: fc.MustParseIP(hostGW),
 				},
 			},
 		}},
@@ -68,28 +86,26 @@ func spawn(idx int, ip string, baseLog *logrus.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	logEntry := logrus.NewEntry(baseLog).WithField("vm", vmID)
-
-	m, err := fc.NewMachine(ctx, cfg, fc.WithLogger(logEntry))
+	entry := logrus.NewEntry(baseLog).WithField("vm", vmID)
+	m, err := fc.NewMachine(ctx, cfg, fc.WithLogger(entry))
 	if err != nil {
-		logEntry.Fatalf("new: %v", err)
+		entry.Fatalf("new: %v", err)
 	}
-
 	if err := m.Start(ctx); err != nil {
-		logEntry.Fatalf("start: %v", err)
+		entry.Fatalf("start: %v", err)
 	}
+	entry.Infof("up → ssh root@%s (pwd firecracker)", ip)
 
-	logEntry.Infof("up → ssh root@%s (pwd firecracker)", ip)
-	go m.Wait(context.Background())
+	go m.Wait(context.Background()) // reap when it exits
 }
 
 func main() {
-	logger := logrus.New()
-	logger.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
+	log := logrus.New()
+	log.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
 
-	spawn(0, "172.16.0.10", logger)
-	spawn(1, "172.16.0.11", logger)
-	spawn(2, "172.16.0.12", logger)
+	spawn(0, "172.16.0.10", log)
+	spawn(1, "172.16.0.11", log)
+	spawn(2, "172.16.0.12", log)
 
-	select {} // keep main alive
+	select {} // keep host alive
 }
