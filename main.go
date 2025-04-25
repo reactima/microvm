@@ -23,7 +23,7 @@ const (
 	hostCIDR = "172.16.0.1/24"
 	hostGW   = "172.16.0.1"
 	subnet   = "172.16.0.0/24"
-	memMB    = 96
+	memMB    = 512
 )
 
 func run(cmd ...string) {
