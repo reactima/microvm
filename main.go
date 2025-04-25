@@ -1,3 +1,5 @@
+// main.go – launch three Firecracker microVMs on fcbr0 bridge
+// run with: sudo -E $(which go) run main.go
 package main
 
 import (
@@ -5,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,13 +35,12 @@ func must(cmd ...string) {
 	}
 }
 
-/* ---------- host net ------------------------------------------------------ */
-
 func ensureRoot() {
 	if os.Geteuid() != 0 {
-		log.Fatal("run with: sudo make run-go   (needs root)")
+		log.Fatalf("run with: sudo -E $(which go) run main.go")
 	}
 }
+
 func bridgeUp() {
 	if _, err := os.Stat("/sys/class/net/" + bridge); os.IsNotExist(err) {
 		must("ip", "link", "add", bridge, "type", "bridge")
@@ -53,14 +53,13 @@ func bridgeUp() {
 			"-s", subnet, "-j", "MASQUERADE")
 	}
 }
+
 func mkTap(name string) {
 	_ = exec.Command("ip", "link", "del", name).Run()
 	must("ip", "tuntap", "add", name, "mode", "tap")
 	must("ip", "link", "set", name, "master", bridge)
 	must("ip", "link", "set", name, "up")
 }
-
-/* ---------- CoW rootfs ---------------------------------------------------- */
 
 func reflinkOrCopy(dst, src string) error {
 	in, err := os.Open(src)
@@ -81,8 +80,6 @@ func reflinkOrCopy(dst, src string) error {
 	return err
 }
 
-/* ---------- spawn VM ------------------------------------------------------ */
-
 func spawn(ip string) {
 	suffix := ip[strings.LastIndex(ip, ".")+1:] // "10"
 	vmID := "vm" + suffix
@@ -101,8 +98,6 @@ func spawn(ip string) {
 		"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw ip=%s::%s:255.255.255.0::eth0:off",
 		ip, hostGW)
 
-	_, ipNet, _ := net.ParseCIDR(ip + "/24")
-
 	cfg := fc.Config{
 		SocketPath:      filepath.Join(dir, "fc.sock"),
 		LogFifo:         filepath.Join(dir, "fc.log.fifo"),
@@ -118,10 +113,7 @@ func spawn(ip string) {
 			StaticConfiguration: &fc.StaticNetworkConfiguration{
 				HostDevName: tap,
 				MacAddress:  "AA:FC:00:00:" + suffix + ":" + suffix,
-				IPConfiguration: &fc.IPConfiguration{
-					IPAddr:  *ipNet,
-					Gateway: net.ParseIP(hostGW),
-				},
+				/* no IPConfiguration – kernel already sets IP via ip= */
 			},
 		}},
 		MachineCfg: models.MachineConfiguration{
@@ -141,8 +133,6 @@ func spawn(ip string) {
 	log.Printf("[%s] up → ssh root@%s (pwd firecracker)", vmID, ip)
 	go m.Wait(context.Background())
 }
-
-/* ---------- main ---------------------------------------------------------- */
 
 func main() {
 	ensureRoot()
