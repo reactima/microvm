@@ -41,9 +41,7 @@ endef
 all: rootfs setup net run
 
 rootfs:
-	@if [ ! -f $(ROOTFS_IMG) ]; then \
-	    ( [ $$(id -u) -eq 0 ] && $(BUILD_SH) || sudo $(BUILD_SH) ); \
-	fi
+	@if [ ! -f $(ROOTFS_IMG) ]; then sudo $(BUILD_SH); fi
 
 setup:
 	@mkdir -p $(MACH); touch $(LOG_FILE) $(METRICS)
@@ -68,16 +66,15 @@ run:
 	@rm -f $(API_SOCK)
 	$(FC_BIN) --api-sock $(API_SOCK) --log-path $(LOG_FILE) --metrics-path $(METRICS) & \
 	FC=$$!; while [ ! -S $(API_SOCK) ]; do sleep .1; done; \
-	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' -d@$(BOOT_JSON)  http://localhost/boot-source ; \
-	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' -d@$(DRIVE_JSON) http://localhost/drives/rootfs ; \
-	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' -d@$(NET_JSON)   http://localhost/network-interfaces/eth0 ; \
-	curl -sS --unix-socket $(API_SOCK) -X PUT -H 'Content-Type: application/json' \
-	     -d '{"action_type":"InstanceStart"}' http://localhost/actions ; \
-	echo "✅  microVM up — run 'make ssh'"; \
+	curl --unix-socket $(API_SOCK) -sS -X PUT -H 'Content-Type: application/json' -d@$(BOOT_JSON)  http://localhost/boot-source ; \
+	curl --unix-socket $(API_SOCK) -sS -X PUT -H 'Content-Type: application/json' -d@$(DRIVE_JSON) http://localhost/drives/rootfs ; \
+	curl --unix-socket $(API_SOCK) -sS -X PUT -H 'Content-Type: application/json' -d@$(NET_JSON)   http://localhost/network-interfaces/eth0 ; \
+	curl --unix-socket $(API_SOCK) -sS -X PUT -H 'Content-Type: application/json' -d '{"action_type":"InstanceStart"}' http://localhost/actions ; \
+	echo "single VM ready — make ssh"; \
 	wait $$FC
 
 ssh:
-	@echo "→ SSH into $(call vm_ip)"
+	@echo "→ SSH to $(call vm_ip)"
 	@ssh $(SSH_OPTS) $(SSH_USER)@$(call vm_ip)
 
 clean:
@@ -86,9 +83,9 @@ clean:
 	-rm -rf $(MACH) $(ROOTFS_IMG) machine/vm*
 
 metrics:
-	@curl -sS --unix-socket $(API_SOCK) http://localhost/metrics | jq .
+	@curl --unix-socket $(API_SOCK) -sS http://localhost/metrics | jq .
 
-run-go:			## multi-VM launcher; also migrates IP from tap0→fcbr0
+run-go:            ## multi-VM launcher (needs root)
 	@sudo ip addr del $(HOST)/24 dev $(TAP) 2>/dev/null || true
 	@sudo -E $(shell which go) run main.go
 

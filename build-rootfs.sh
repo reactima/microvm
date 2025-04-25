@@ -58,6 +58,8 @@ cat > /etc/inittab <<'EOT'
 ::sysinit:/bin/mount -t devtmpfs devtmpfs /dev
 ::sysinit:/bin/mkdir -p /dev/pts
 ::sysinit:/bin/mount -t devpts devpts /dev/pts
+# ⬇ Tickle bridge so ARP/FDB populates immediately
+::once:/bin/ping -c1 -W1 172.16.0.1
 ::respawn:/usr/sbin/haveged -F -w 1024
 ::respawn:/usr/sbin/dropbear -F -E
 ::respawn:/bin/ash

@@ -34,9 +34,11 @@ func run(cmd ...string) {
 	}
 }
 
+/* network ------------------------------------------------------------------ */
+
 func ensureRoot() {
 	if os.Geteuid() != 0 {
-		log.Fatal("run with: sudo make run-go")
+		log.Fatal("run with sudo")
 	}
 }
 
@@ -60,6 +62,8 @@ func mkTap(name string) {
 	run("ip", "link", "set", name, "up")
 }
 
+/* rootfs ------------------------------------------------------------------- */
+
 func reflinkOrCopy(dst, src string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -79,18 +83,18 @@ func reflinkOrCopy(dst, src string) error {
 	return err
 }
 
+/* spawn -------------------------------------------------------------------- */
+
 func spawn(ip string) {
 	sfx := ip[strings.LastIndex(ip, ".")+1:]
 	vmID := "vm" + sfx
 	dir := filepath.Join("machine", vmID)
-
-	// ─── NEW: wipe stale state ───────────────────────────────────────────────
-	_ = os.RemoveAll(dir)
+	os.RemoveAll(dir)
 	_ = os.MkdirAll(dir, 0o755)
 
 	dst := filepath.Join(dir, "rootfs.ext4")
 	if err := reflinkOrCopy(dst, rootfs); err != nil {
-		log.Fatalf("[%s] rootfs clone: %v", vmID, err)
+		log.Fatalf("[%s] rootfs copy: %v", vmID, err)
 	}
 
 	tap := "tapfc" + sfx
