@@ -58,7 +58,6 @@ cat > /etc/inittab <<'EOT'
 ::sysinit:/bin/mount -t devtmpfs devtmpfs /dev
 ::sysinit:/bin/mkdir -p /dev/pts
 ::sysinit:/bin/mount -t devpts devpts /dev/pts
-::sysinit:/sbin/ifconfig eth0 172.16.0.2 netmask 255.255.255.0 up
 ::respawn:/usr/sbin/haveged -F -w 1024
 ::respawn:/usr/sbin/dropbear -F -E
 ::respawn:/bin/ash
