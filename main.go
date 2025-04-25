@@ -83,6 +83,9 @@ func spawn(ip string) {
 	sfx := ip[strings.LastIndex(ip, ".")+1:]
 	vmID := "vm" + sfx
 	dir := filepath.Join("machine", vmID)
+
+	// ─── NEW: wipe stale state ───────────────────────────────────────────────
+	_ = os.RemoveAll(dir)
 	_ = os.MkdirAll(dir, 0o755)
 
 	dst := filepath.Join(dir, "rootfs.ext4")
