@@ -1,14 +1,13 @@
-// main.go – three microVMs on bridge fcbr0
-
+// main.go – three VMs on bridge fcbr0; run as root.
 package main
 
 import (
 	"context"
 	fc "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -19,39 +18,50 @@ const (
 	kernel     = "hello-vmlinux.bin"
 	rootfs     = "alpine-rootfs.ext4"
 	bridge     = "fcbr0"
+	hostIP     = "172.16.0.1/24"
 	hostGW     = "172.16.0.1"
 	subnetCIDR = "172.16.0.0/24"
-	memPerVM   = 96 // MiB
+	memPerVM   = 96
 )
 
-var log = logrus.New()
+func must(cmd *exec.Cmd) {
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("cmd %v: %v", cmd.Args, err)
+	}
+}
 
-/* ---------- host-side helpers ------------------------------------------------ */
+func ensureRoot() {
+	if os.Geteuid() != 0 {
+		log.Fatal("Run this program as root: sudo go run main.go")
+	}
+}
 
-func sh(args ...string) *exec.Cmd { return exec.Command("sudo", args...) }
+/* ---------- bridge & NAT --------------------------------------------------- */
 
 func ensureBridge() {
 	if _, err := os.Stat("/sys/class/net/" + bridge); os.IsNotExist(err) {
-		log.Info("creating bridge " + bridge)
-		_ = sh("ip", "link", "add", "name", bridge, "type", "bridge").Run()
-		_ = sh("ip", "addr", "add", hostGW+"/24", "dev", bridge).Run()
-		_ = sh("ip", "link", "set", bridge, "up").Run()
+		must(exec.Command("ip", "link", "add", bridge, "type", "bridge"))
+		must(exec.Command("ip", "addr", "add", hostIP, "dev", bridge))
+		must(exec.Command("ip", "link", "set", bridge, "up"))
 	}
-	// one-time NAT
-	if err := sh("iptables", "-t", "nat", "-C", "POSTROUTING",
+
+	if err := exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING",
 		"-s", subnetCIDR, "-j", "MASQUERADE").Run(); err != nil {
-		_ = sh("iptables", "-t", "nat", "-A", "POSTROUTING",
-			"-s", subnetCIDR, "-j", "MASQUERADE").Run()
+		must(exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING",
+			"-s", subnetCIDR, "-j", "MASQUERADE"))
 	}
 }
 
-func attachTap(tap string) {
-	_ = sh("ip", "tuntap", "add", "dev", tap, "mode", "tap").Run()
-	_ = sh("ip", "link", "set", tap, "master", bridge).Run()
-	_ = sh("ip", "link", "set", tap, "up").Run()
+/* ---------- tap per VM ----------------------------------------------------- */
+
+func createTap(name string) {
+	must(exec.Command("ip", "tuntap", "add", name, "mode", "tap"))
+	must(exec.Command("ip", "link", "set", name, "master", bridge))
+	must(exec.Command("ip", "link", "set", name, "up"))
 }
 
-/* ---------- CoW rootfs ------------------------------------------------------- */
+/* ---------- copy-on-write rootfs ------------------------------------------- */
 
 func reflinkOrCopy(dst, src string) error {
 	in, err := os.Open(src)
@@ -72,20 +82,20 @@ func reflinkOrCopy(dst, src string) error {
 	return err
 }
 
-/* ---------- VM spawn --------------------------------------------------------- */
+/* ---------- spawn one VM --------------------------------------------------- */
 
 func spawn(idx int, ip string) {
-	vmID := "vm" + ip[len(ip)-2:] // vm10, vm11 …
+	vmID := "vm" + ip[len(ip)-2:]
 	dir := filepath.Join("machine", vmID)
 	_ = os.MkdirAll(dir, 0o755)
 
-	dst := filepath.Join(dir, "rootfs.ext4")
-	if err := reflinkOrCopy(dst, rootfs); err != nil {
-		log.Fatalf("[%s] clone rootfs: %v", vmID, err)
+	vmRoot := filepath.Join(dir, "rootfs.ext4")
+	if err := reflinkOrCopy(vmRoot, rootfs); err != nil {
+		log.Fatalf("[%s] rootfs clone: %v", vmID, err)
 	}
 
 	tap := "tapfc" + ip[len(ip)-2:]
-	attachTap(tap)
+	createTap(tap)
 
 	_, ipNet, _ := net.ParseCIDR(ip + "/24")
 
@@ -97,7 +107,7 @@ func spawn(idx int, ip string) {
 		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw quiet",
 		Drives: []models.Drive{{
 			DriveID:      fc.String("rootfs"),
-			PathOnHost:   fc.String(dst),
+			PathOnHost:   fc.String(vmRoot),
 			IsRootDevice: fc.Bool(true),
 		}},
 		NetworkInterfaces: fc.NetworkInterfaces{{
@@ -117,27 +127,26 @@ func spawn(idx int, ip string) {
 		VMID: vmID,
 	}
 
-	entry := log.WithField("vm", vmID)
-	m, err := fc.NewMachine(context.Background(), cfg, fc.WithLogger(entry))
+	m, err := fc.NewMachine(context.Background(), cfg)
 	if err != nil {
-		entry.Fatalf("new: %v", err)
+		log.Fatalf("[%s] new: %v", vmID, err)
 	}
 	if err := m.Start(context.Background()); err != nil {
-		entry.Fatalf("start: %v", err)
+		log.Fatalf("[%s] start: %v", vmID, err)
 	}
-	entry.Infof("up → ssh root@%s  (pwd firecracker)", ip)
+	log.Printf("[%s] up → ssh root@%s (pwd firecracker)", vmID, ip)
 	go m.Wait(context.Background())
 }
 
-/* ---------- main ------------------------------------------------------------ */
+/* ---------- main ----------------------------------------------------------- */
 
 func main() {
-	log.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
+	ensureRoot()
 	ensureBridge()
 
 	spawn(0, "172.16.0.10")
 	spawn(1, "172.16.0.11")
 	spawn(2, "172.16.0.12")
 
-	select {} // keep host alive
+	select {} // keep program alive
 }
