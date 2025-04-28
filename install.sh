@@ -35,7 +35,6 @@ if ! command -v go >/dev/null; then
   GO_TAR=go${GO_VER}.linux-amd64.tar.gz
   curl -fsSL "https://go.dev/dl/$GO_TAR" -o "machines/build/downloads/$GO_TAR"
   sudo tar -C /usr/local -xzf "machines/build/downloads/$GO_TAR"
-  rm "machines/build/downloads/$GO_TAR"
   echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
   export PATH=$PATH:/usr/local/go/bin
 fi

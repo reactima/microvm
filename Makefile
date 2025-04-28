@@ -42,14 +42,18 @@ $(if $(VM),172.16.0.$(VM),$(GUEST_DEFAULT))
 endef
 
 # targets --------------------------------------------------------------------
-.PHONY: all rootfs kernel setup net run ssh clean metrics run-go git-reset
+.PHONY: all rootfs setup net run ssh clean metrics run-go git-reset
 
 all: rootfs setup net run
 
 rootfs:
 	@if [ ! -f $(ROOTFS_IMG) ]; then sudo $(BUILD_SH); fi
 
-setup:
+setup: rootfs
+	@if [ ! -f $(KERNEL_IMG) ]; then \
+	  echo "ERROR: kernel image '$(KERNEL_IMG)' not found. Please run install.sh first."; \
+	  exit 1; \
+	fi
 	@mkdir -p $(MACH); touch $(LOG_FILE) $(METRICS)
 	@printf '{\n "kernel_image_path":"%s",\n "boot_args":"console=ttyS0 reboot=k panic=1 pci=off virtio_mmio.device=4K@0xd0000000:5 root=/dev/vda rw quiet"}\n' \
 	    "$(abspath $(KERNEL_IMG))" > $(BOOT_JSON)
