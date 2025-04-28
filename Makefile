@@ -14,7 +14,7 @@ DOWNLOADS    := $(BUILD_DIR)/downloads
 
 # Firecracker binary and kernel image
 FC_BIN     := /usr/local/bin/firecracker
-KERNEL_IMG := $(DOWNLOADS)/vmlinux.bin
+KERNEL_IMG := $(DOWNLOADS)/hello-vmlinux.bin
 ROOTFS_IMG := $(BUILD_DIR)/alpine-rootfs.ext4
 BUILD_SH   := $(CURDIR)/build-rootfs.sh
 
@@ -42,31 +42,34 @@ $(if $(VM),172.16.0.$(VM),$(GUEST_DEFAULT))
 endef
 
 # targets --------------------------------------------------------------------
-.PHONY: all rootfs kernel setup net run ssh clean metrics run-go git-reset
+.PHONY: all rootfs setup net run ssh clean metrics run-go git-reset
 
-all: rootfs kernel setup net run
+all: rootfs setup net run
 
+# Build root filesystem if missing
 rootfs:
-	@if [ ! -f $(ROOTFS_IMG) ]; then sudo $(BUILD_SH); fi
-
-kernel:
-	@mkdir -p $(DOWNLOADS)
-	@if [ ! -f $(KERNEL_IMG) ]; then \
-	  echo "🔧 Downloading kernel with virtio support"; \
-	  curl -fsSL -o $(KERNEL_IMG) \
-	    https://s3.amazonaws.com/firecracker-public/vmlinux.bin; \
+	@if [ ! -f $(ROOTFS_IMG) ]; then \
+	  echo "🔧 Building rootfs..."; \
+	  sudo $(BUILD_SH); \
 	fi
 
-setup: rootfs kernel
+# Verify that install.sh has placed kernel in downloads
+setup: rootfs
+	@if [ ! -f $(KERNEL_IMG) ]; then \
+	  echo "ERROR: kernel image '$(KERNEL_IMG)' not found."; \
+	  echo "       Please run './install.sh' to download it."; \
+	  exit 1; \
+	fi
 	@mkdir -p $(MACH)
 	@touch $(LOG_FILE) $(METRICS)
-	@printf '{\n "kernel_image_path":"%s",\n "boot_args":"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"\n}\n' \
+	@printf '{\n "kernel_image_path":"%s",\n "boot_args":"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw quiet"}\n' \
 	    "$(abspath $(KERNEL_IMG))" > $(BOOT_JSON)
-	@printf '{\n "drive_id":"rootfs", "path_on_host":"%s", "is_root_device":true, "is_read_only":false\n}\n' \
+	@printf '{\n "drive_id":"rootfs","path_on_host":"%s","is_root_device":true,"is_read_only":false}\n' \
 	    "$(abspath $(ROOTFS_IMG))" > $(DRIVE_JSON)
-	@printf '{\n "iface_id":"eth0", "host_dev_name":"%s", "guest_mac":"%s"\n}\n' \
+	@printf '{\n "iface_id":"eth0","host_dev_name":"%s","guest_mac":"%s"}\n' \
 	    $(TAP) $(MAC) > $(NET_JSON)
 
+# Configure networking
 net:
 	@sudo modprobe tun
 	@sudo ip link del $(TAP) 2>/dev/null || true
@@ -77,6 +80,7 @@ net:
 	@sudo iptables -C POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE 2>/dev/null || \
 	  sudo iptables -A POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE
 
+# Launch single VM
 run:
 	@rm -f $(API_SOCK)
 	$(FC_BIN) --api-sock $(API_SOCK) --log-path $(LOG_FILE) --metrics-path $(METRICS) & \
@@ -89,23 +93,26 @@ run:
 	echo "single VM ready — make ssh"; \
 	wait $$FC
 
+# SSH into VM (single or multi)
 ssh:
 	@echo "→ SSH to $(call vm_ip)"
 	@ssh $(SSH_OPTS) $(SSH_USER)@$(call vm_ip)
 
+# Clean up all generated state
 clean:
 	-pkill -x firecracker 2>/dev/null || true
 	-sudo ip link del $(TAP) 2>/dev/null || true
 	-rm -rf $(MACHINES_DIR)/machine $(ROOTFS_IMG) $(MACHINES_DIR)/vm*
 
+# Fetch metrics from running VM
 metrics:
 	@curl --unix-socket $(API_SOCK) -sS http://localhost/metrics | jq .
 
-run-go:            ## multi-VM launcher (needs root)
+# Launch multi-VM via Go
+run-go:
 	@sudo ip addr del $(HOST)/24 dev $(TAP) 2>/dev/null || true
 	@sudo -E $(shell which go) run main.go
 
-git-reset: ## git-reset
-	cd /ilya/microvm
-	git reset --hard HEAD
-	git pull origin main
+# Reset Git repo to latest main
+git-reset:
+	cd /ilya/microvm && git reset --hard HEAD && git pull origin main
