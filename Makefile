@@ -80,8 +80,16 @@ net:
 	@sudo iptables -C POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE 2>/dev/null || \
 	  sudo iptables -A POSTROUTING -t nat -s $(GUEST)/32 -j MASQUERADE
 
+
+clean-tap:
+	# remove any stale tapfc0 interface, route & ARP entry
+	sudo ip link delete tapfc0           || true
+	sudo ip route del 172.16.0.0/24 dev tapfc0  || true
+	sudo ip neigh flush dev tapfc0       || true
+
+
 # Launch single VM
-run:
+run: clean-tap
 	@rm -f $(API_SOCK)
 	$(FC_BIN) --api-sock $(API_SOCK) --log-path $(LOG_FILE) --metrics-path $(METRICS) & \
 	FC=$$!; \

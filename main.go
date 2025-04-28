@@ -35,6 +35,18 @@ func run(cmd ...string) {
 	}
 }
 
+func cleanupStaleTap() {
+	cmds := [][]string{
+		{"ip", "link", "delete", "tapfc0"},
+		{"ip", "route", "del", "172.16.0.0/24", "dev", "tapfc0"},
+		{"ip", "neigh", "flush", "dev", "tapfc0"},
+	}
+	for _, args := range cmds {
+		// ignore errors, we just want to clear any leftover config
+		exec.Command(args[0], args[1:]...).Run()
+	}
+}
+
 // ensureRoot makes sure the program is run as root.
 func ensureRoot() {
 	if os.Geteuid() != 0 {
@@ -152,6 +164,7 @@ func spawn(ip string) error {
 }
 
 func main() {
+	cleanupStaleTap()
 	ensureRoot()
 	bridgeUp()
 
