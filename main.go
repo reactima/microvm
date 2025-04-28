@@ -26,6 +26,7 @@ const (
 	memMB    = 512
 )
 
+// run executes a command and logs fatal on error.
 func run(cmd ...string) {
 	c := exec.Command(cmd[0], cmd[1:]...)
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
@@ -34,14 +35,14 @@ func run(cmd ...string) {
 	}
 }
 
-/* network ------------------------------------------------------------------ */
-
+// ensureRoot makes sure the program is run as root.
 func ensureRoot() {
 	if os.Geteuid() != 0 {
 		log.Fatal("run with sudo")
 	}
 }
 
+// bridgeUp creates and configures the bridge if not present.
 func bridgeUp() {
 	if _, err := os.Stat("/sys/class/net/" + bridge); os.IsNotExist(err) {
 		run("ip", "link", "add", bridge, "type", "bridge")
@@ -55,6 +56,7 @@ func bridgeUp() {
 	}
 }
 
+// mkTap creates a tap device and attaches it to the bridge.
 func mkTap(name string) {
 	_ = exec.Command("ip", "link", "del", name).Run()
 	run("ip", "tuntap", "add", name, "mode", "tap")
@@ -62,8 +64,7 @@ func mkTap(name string) {
 	run("ip", "link", "set", name, "up")
 }
 
-/* rootfs ------------------------------------------------------------------- */
-
+// reflinkOrCopy tries a reflink clone, falling back to copy.
 func reflinkOrCopy(dst, src string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -83,27 +84,33 @@ func reflinkOrCopy(dst, src string) error {
 	return err
 }
 
-/* spawn -------------------------------------------------------------------- */
-
-func spawn(ip string) {
+// spawn attempts to configure and start a VM at the given IP.
+// On success, returns nil; on failure, returns an error.
+func spawn(ip string) error {
 	sfx := ip[strings.LastIndex(ip, ".")+1:]
 	vmID := "vm" + sfx
 	dir := filepath.Join("machines", "machine", vmID)
 	os.RemoveAll(dir)
-	_ = os.MkdirAll(dir, 0o755)
-
-	dst := filepath.Join(dir, "rootfs.ext4")
-	if err := reflinkOrCopy(dst, rootfs); err != nil {
-		log.Fatalf("[%s] rootfs copy: %v", vmID, err)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create dir %s: %w", dir, err)
 	}
 
+	// copy or reflink rootfs
+	dst := filepath.Join(dir, "rootfs.ext4")
+	if err := reflinkOrCopy(dst, rootfs); err != nil {
+		return fmt.Errorf("[%s] rootfs copy: %w", vmID, err)
+	}
+
+	// create tap
 	tap := "tapfc" + sfx
 	mkTap(tap)
 
+	// kernel args
 	kargs := fmt.Sprintf(
 		"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw ip=%s::%s:255.255.255.0::eth0:off",
 		ip, hostGW)
 
+	// Firecracker config
 	cfg := fc.Config{
 		SocketPath:      filepath.Join(dir, "fc.sock"),
 		LogFifo:         filepath.Join(dir, "fc.log.fifo"),
@@ -128,22 +135,56 @@ func spawn(ip string) {
 		VMID: vmID,
 	}
 
+	// create and start the machine
 	m, err := fc.NewMachine(context.Background(), cfg)
 	if err != nil {
-		log.Fatalf("[%s] new: %v", vmID, err)
+		return fmt.Errorf("[%s] new: %w", vmID, err)
 	}
 	if err := m.Start(context.Background()); err != nil {
-		log.Fatalf("[%s] start: %v", vmID, err)
+		return fmt.Errorf("[%s] start: %w", vmID, err)
 	}
+
+	// log and wait
 	log.Printf("[%s] up → ssh root@%s (pwd firecracker)", vmID, ip)
 	go m.Wait(context.Background())
+
+	return nil
 }
 
 func main() {
 	ensureRoot()
 	bridgeUp()
-	for _, ip := range []string{"172.16.0.10", "172.16.0.11", "172.16.0.12"} {
-		spawn(ip)
+
+	ips := []string{"172.16.0.10", "172.16.0.11", "172.16.0.12"}
+	var success []string
+	var failed []string
+
+	for _, ip := range ips {
+		if err := spawn(ip); err != nil {
+			log.Printf("ERROR %s: %v", ip, err)
+			failed = append(failed, ip)
+		} else {
+			success = append(success, ip)
+		}
 	}
+
+	// summary
+	fmt.Println("\n=== Summary ===")
+	if len(success) > 0 {
+		fmt.Printf("Running VMs:\n")
+		for _, ip := range success {
+			fmt.Printf("  %s → ssh root@%s (pwd firecracker)\n", ip, ip)
+		}
+	} else {
+		fmt.Println("No VMs started successfully.")
+	}
+	if len(failed) > 0 {
+		fmt.Printf("Failed VMs:\n")
+		for _, ip := range failed {
+			fmt.Printf("  %s\n", ip)
+		}
+	}
+
+	// block forever
 	select {}
 }
