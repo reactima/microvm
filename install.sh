@@ -56,13 +56,18 @@ cd "${SRC_DIR}"
 # Enable logging, metrics, vsock
 sg docker -c 'tools/devtool build -- --no-default-features --features vsock,logger,metrics'
 
-echo "📁 Step 8: Locate the just-built binary and install"
+echo "📁 Step 8: Locate the just-built binary and install atomically"
 BIN_PATH=$(find build/cargo_target -type f -name firecracker -path '*/debug/firecracker' | head -n1)
 if [ -z "$BIN_PATH" ]; then
   echo "❌ could not find built firecracker binary"
   exit 1
 fi
-sudo cp "$BIN_PATH" /usr/local/bin/firecracker
+
+# Copy to temp file then rename to avoid \"Text file busy\" errors
+TMP_BIN="/usr/local/bin/firecracker.new"
+sudo cp "$BIN_PATH" "$TMP_BIN"
+sudo chmod 755 "$TMP_BIN"
+sudo mv "$TMP_BIN" /usr/local/bin/firecracker
 
 echo "📦  Step 9: fetch demo kernel"
 curl -# -Lo "machines/build/downloads/hello-vmlinux.bin" \

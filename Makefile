@@ -42,7 +42,7 @@ $(if $(VM),172.16.0.$(VM),$(GUEST_DEFAULT))
 endef
 
 # targets --------------------------------------------------------------------
-.PHONY: all rootfs setup net run ssh clean metrics run-go git-reset
+.PHONY: all rootfs kernel setup net run ssh clean metrics run-go git-reset
 
 all: rootfs setup net run
 
