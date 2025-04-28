@@ -3,11 +3,12 @@
 
 set -euo pipefail
 
-IMG=alpine-rootfs.ext4
+# Define paths inside machines folder
+IMG="machines/build/alpine-rootfs.ext4"
 SIZE=512M
 MNT=$(mktemp -d)
+TAR="machines/build/downloads/alpine-mini.tar.gz"
 URL=https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.2-x86_64.tar.gz
-TAR=/tmp/alpine-mini.tar.gz
 
 cleanup(){ sudo umount "$MNT" 2>/dev/null || true; rm -rf "$MNT"; }
 trap cleanup EXIT

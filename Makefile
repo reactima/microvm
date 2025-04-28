@@ -7,13 +7,19 @@
 #     make ssh VM=11  – SSH into multi-VM #11 (172.16.0.11)
 # ---------------------------------------------------------------------------
 
+# Base directory for machines build
+MACHINES_DIR := machines
+BUILD_DIR := $(MACHINES_DIR)/build
+DOWNLOADS_DIR := $(BUILD_DIR)/downloads
+
+# Firecracker binary and kernel image
 FC_BIN      := /usr/local/bin/firecracker
-KERNEL_IMG  := hello-vmlinux.bin
-ROOTFS_IMG  := alpine-rootfs.ext4
+KERNEL_IMG  := $(DOWNLOADS_DIR)/hello-vmlinux.bin
+ROOTFS_IMG  := $(BUILD_DIR)/alpine-rootfs.ext4
 BUILD_SH    := $(CURDIR)/build-rootfs.sh
 
 # single-VM artefacts --------------------------------------------------------
-MACH        := machine
+MACH        := $(MACHINES_DIR)/machine
 API_SOCK    := $(MACH)/fc.sock
 LOG_FILE    := $(MACH)/fc.log
 METRICS     := $(MACH)/fc.metrics
@@ -36,7 +42,7 @@ $(if $(VM),172.16.0.$(VM),$(GUEST_DEFAULT))
 endef
 
 # targets --------------------------------------------------------------------
-.PHONY: all rootfs setup net run ssh clean metrics run-go
+.PHONY: all rootfs setup net run ssh clean metrics run-go git-reset
 
 all: rootfs setup net run
 
@@ -80,7 +86,7 @@ ssh:
 clean:
 	-pkill -x firecracker 2>/dev/null || true
 	-sudo ip link del $(TAP) 2>/dev/null || true
-	-rm -rf $(MACH) $(ROOTFS_IMG) machine/vm*
+	-rm -rf $(MACHINES_DIR)/machine $(ROOTFS_IMG) $(MACHINES_DIR)/vm*
 
 metrics:
 	@curl --unix-socket $(API_SOCK) -sS http://localhost/metrics | jq .

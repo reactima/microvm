@@ -2,6 +2,10 @@
 # install.sh – host-side one-shot setup
 set -euo pipefail
 
+# Create the necessary directories under machines
+mkdir -p machines/build/downloads
+mkdir -p machines/build/firecracker
+
 echo "🔧  Step 1: prerequisites"
 sudo apt update
 sudo apt install -y --no-install-recommends \
@@ -29,9 +33,9 @@ echo "🐹  Step 5: Go toolchain"
 if ! command -v go >/dev/null; then
   GO_VER=1.22.2
   GO_TAR=go${GO_VER}.linux-amd64.tar.gz
-  curl -fsSL "https://go.dev/dl/$GO_TAR" -o /tmp/$GO_TAR
-  sudo tar -C /usr/local -xzf /tmp/$GO_TAR
-  rm /tmp/$GO_TAR
+  curl -fsSL "https://go.dev/dl/$GO_TAR" -o "machines/build/downloads/$GO_TAR"
+  sudo tar -C /usr/local -xzf "machines/build/downloads/$GO_TAR"
+  rm "machines/build/downloads/$GO_TAR"
   echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
   export PATH=$PATH:/usr/local/go/bin
 fi
@@ -44,7 +48,7 @@ if [ ! -e /dev/kvm ]; then
 fi
 
 echo "🔥 Step 7: Clone & build Firecracker with log + metrics support"
-SRC_DIR=/tmp/firecracker-src
+SRC_DIR="machines/build/firecracker/firecracker-src"
 sudo rm -rf "${SRC_DIR}"
 git clone https://github.com/firecracker-microvm/firecracker.git "${SRC_DIR}"
 cd "${SRC_DIR}"
@@ -61,7 +65,7 @@ fi
 sudo cp "$BIN_PATH" /usr/local/bin/firecracker
 
 echo "📦  Step 9: fetch demo kernel"
-curl -# -Lo hello-vmlinux.bin \
+curl -# -Lo "machines/build/downloads/hello-vmlinux.bin" \
      https://s3.amazonaws.com/spec.ccfc.min/img/hello/kernel/hello-vmlinux.bin
 
 echo "✅  All set "

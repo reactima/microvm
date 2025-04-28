@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	kernel   = "hello-vmlinux.bin"
-	rootfs   = "alpine-rootfs.ext4"
+	kernel   = "machines/build/downloads/hello-vmlinux.bin"
+	rootfs   = "machines/build/alpine-rootfs.ext4"
 	bridge   = "fcbr0"
 	hostCIDR = "172.16.0.1/24"
 	hostGW   = "172.16.0.1"
@@ -88,7 +88,7 @@ func reflinkOrCopy(dst, src string) error {
 func spawn(ip string) {
 	sfx := ip[strings.LastIndex(ip, ".")+1:]
 	vmID := "vm" + sfx
-	dir := filepath.Join("machine", vmID)
+	dir := filepath.Join("machines", "machine", vmID)
 	os.RemoveAll(dir)
 	_ = os.MkdirAll(dir, 0o755)
 
