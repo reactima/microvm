@@ -6,5 +6,4 @@ git log \
   | uniq -c \                 # count commits per author
   | sort -rn                  # highest-commit authors first
   
-  
 ```
